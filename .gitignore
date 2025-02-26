@@ -1,0 +1,25 @@
+# Usual suspects
+**/_*
+**/.DS_Store
+**/Thumbs.db
+**/__pycache__
+# NC and XZ model files are excluded in general
+*.nc
+*.xz
+*.csv
+*.tex
+# Calibration scale file and measurement files are not ignored
+!keo_scale.nc
+!keocounts/*.nc
+# Results
+!keomodel/*.nc
+!keomodel/*.xz
+keomodel/*.png
+# Ignore result directories with suffixes
+fitprops_*
+fitpropsvert_*
+keograms_*
+keomodel_*
+# Ignore anything but python files in glow2d
+!glow2d
+!glow2d/*.py
