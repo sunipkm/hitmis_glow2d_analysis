@@ -14,7 +14,6 @@ import matplotlib.pyplot as plt
 import os
 import sys
 import glob
-from BaselineRemoval import BaselineRemoval
 from scipy.optimize import curve_fit
 from pysolar import solar
 import pytz
