@@ -256,7 +256,10 @@ def get_gps_tec(tstart: Numeric, tstop: Numeric, latrange: slice = None, lonrang
 
 
 def get_tec(iono: xr.Dataset) -> np.ndarray:
-    from scipy.integrate import trapz
+    try:
+        from scipy.integrate import trapezoid as trapz
+    except ImportError:
+        from scipy.integrate import trapz
     ne = iono['NeOut'].values.copy()
     ne = np.nan_to_num(ne, nan=0)
     alt = iono['alt_km'].values

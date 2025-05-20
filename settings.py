@@ -2,9 +2,9 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from typing import Optional
+from typing import List, Optional
 
-SUFFIX: Optional[str] = None # suffix for the output files
+SUFFIX: Optional[str] = 'randinit_run0' # suffix for the output files
 FIT_SHOW_FIGS: bool = True # show fit figures
 FIT_SAVE_FIGS: bool = False # save fit figures
 
@@ -30,25 +30,30 @@ os.makedirs(FITPROPS_DIR, exist_ok=True)
 os.makedirs(VERTPROPS_DIR, exist_ok=True)
 os.makedirs(KEOGRAMS_DIR, exist_ok=True)
 
-if __name__ == '__main__':
+def delete_directories(dirs: List[str] | str)->None:
+    if isinstance(dirs, str):
+        dirs = [dirs]
+    print('Deleting directories:')
+    for d in dirs:
+        if not os.path.exists(d):
+            continue
+        print(f'  {d}')
     while True:
-        inp = input('Delete all files in directories? (y/n): ')
+        inp = input(f'Delete directories? (y/n): ')
         inp = ''.join(inp.split()).lower()
         if inp in ['y', 'yes']:
             break
         elif inp in ['n', 'no']:
-            exit()
+            return
         else:
             print('Invalid input. Try again.')
-    print('Deleting files...', end=' ')
-    sys.stdout.flush()
-    print(f'{FITPROPS_DIR}...', end=' ')
-    sys.stdout.flush()
-    shutil.rmtree(FITPROPS_DIR, ignore_errors=True)
-    print(f'{VERTPROPS_DIR}...', end=' ')
-    sys.stdout.flush()
-    shutil.rmtree(VERTPROPS_DIR, ignore_errors=True)
-    print(f'{KEOGRAMS_DIR}...', end=' ')
-    sys.stdout.flush()
-    shutil.rmtree(KEOGRAMS_DIR, ignore_errors=True)
-    print('Done.')
+    for d in dirs:
+        print(f'Deleting directory {d}...', end=' ')
+        sys.stdout.flush()
+        shutil.rmtree(d, ignore_errors=True)
+        print('Done.')
+        sys.stdout.flush()
+
+if __name__ == '__main__':
+    delete_directories([FITPROPS_DIR, VERTPROPS_DIR, KEOGRAMS_DIR])
+    delete_directories(MODEL_DIR)
