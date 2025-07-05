@@ -1,128 +1,50 @@
 # %% Imports
 from __future__ import annotations
-from settings import MODEL_DIR, FITPROPS_DIR
-from collections.abc import Iterable
+from itertools import repeat
+from pathlib import Path
+from typing import SupportsFloat as Numeric, Tuple
+
+from common_funcs import geocent_to_geodet, get_date, get_gps_tec, get_tec
+from settings import Directories, is_interactive_session
+
+from matplotlib.axes import Axes
 import datetime as dt
-from functools import partial
-import gc
 import lzma
 import multiprocessing
 import pickle
-from typing import Dict, List, Sequence, SupportsFloat as Numeric, Tuple
-from tzlocal import get_localzone
-import uncertainties
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import sys
-import glob
-from scipy.optimize import curve_fit
-from pysolar import solar
 import pytz
-from matplotlib.pyplot import cm
 from glowpython import no_precipitation
-
-import geomagdata as gi
-from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter1d, gaussian_filter
-from scipy.optimize import least_squares, OptimizeResult
-from skmpython import GenericFit, staticvars
-
-import glow2d
-from tqdm import tqdm
-
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib import rc, ticker
 import matplotlib
 import pandas as pd
-from dateutil.parser import parse
+import warnings
 
-usetex = False
-if not usetex:
-    # computer modern math text
-    matplotlib.rcParams.update({'mathtext.fontset': 'cm'})
-
-rc('font', **{'family': 'serif',
-   'serif': ['Times' if usetex else 'Times New Roman']})
-# for Palatino and other serif fonts use:
-# rc('font',**{'family':'serif','serif':['Palatino']})
-rc('text', usetex=usetex)
-
-print(f'Loaded settings: {MODEL_DIR}, {FITPROPS_DIR}')
-# %% Interpolate + Smoothing
-
-
-def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None):
-    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x)
-    y = gaussian_filter1d(y, sigma=sigma)
-    if round is not None:
-        y = np.round(y, decimals=round)
-    return y
-
-
-def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    tdtime = list(map(lambda t: pd.to_datetime(
-        t).to_pydatetime().astimezone(pytz.utc), tstamps))
-    tdtime_in = [tdtime[0] - dt.timedelta(hours=6), tdtime[0] - dt.timedelta(hours=3)] + tdtime + [
-        tdtime[-1] + dt.timedelta(hours=3), tdtime[-1] + dt.timedelta(hours=6)]
-    ttidx = np.asarray(list(map(lambda t: t.timestamp(), tdtime)))
-    pdtime = []
-    f107a = []
-    f107 = []
-    f107p = []
-    ap = []
-    for td in tdtime_in:
-        ip = gi.get_indices(
-            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware)
-        f107a.append(ip["f107s"].iloc[1])
-        f107.append(ip['f107'].iloc[1])
-        f107p.append(ip['f107'].iloc[0])
-        ap.append(ip["Ap"].iloc[1])
-        pdtime.append(pd.to_datetime(
-            ip.index[1].value).to_pydatetime().timestamp())
-    pdtime = np.asarray(pdtime)
-    ap = np.asarray(ap)
-    f107a = np.asarray(f107a)
-    f107 = np.asarray(f107)
-    f107p = np.asarray(f107p)
-
-    ap = do_interp_smoothing(ttidx, pdtime, ap, round=0)  # rounds to integer
-    f107 = do_interp_smoothing(ttidx, pdtime, f107)  # does not round
-    f107a = do_interp_smoothing(ttidx, pdtime, f107a)  # does not round
-    f107p = do_interp_smoothing(ttidx, pdtime, f107p)  # does not round
-
-    return tdtime, ap, f107, f107a, f107p
+warnings.filterwarnings("ignore", category=UserWarning)
 # %% Functions
 
 
 def fmt_time(x: Numeric, ofst: dt.datetime) -> str:
-    x = dt.timedelta(hours=x)
-    res = ofst + x
+    x = dt.timedelta(hours=x)  # type: ignore
+    res = ofst + x  # type: ignore
     return res.strftime('%H:%M')
-
-
-def get_date(filename: str) -> str:
-    """Get the date from a filename."""
-    return filename.rsplit('.')[0].rsplit('_')[-1]
 # %% For each day
 
 
-def generate_vert(*param):
-    if len(param) == 1:
-        param = param[0]
-    date, file = param
-    print('Processing', date)
+def generate_vert(model_dir: Path, date: str, file: Path):
+    print(f'Processing {date}...')
     lat, lon = 42.64981361744372, -71.31681056737486
-    if os.path.exists(f'{MODEL_DIR}/vert_{date}.nc'):
-        ionos = xr.load_dataset(f'{MODEL_DIR}/vert_{date}.nc')
+    if os.path.exists(model_dir / f'vert_{date}.nc'):
+        ionos = xr.load_dataset(model_dir / f'vert_{date}.nc')
         return
     ionos = []
     with lzma.open(file, 'rb') as f:
         fitres = pickle.load(f)
     # Get the model data
     tstamps = [x[0] for x in fitres]
-    _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps)
+    _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps)  # type: ignore
     # pbar = tqdm(range(len(tstamps)))
     pbar = range(len(tstamps))
     ionos = []
@@ -150,130 +72,14 @@ def generate_vert(*param):
             iono.attrs['density_perturbation'] = density_pert
             ionos.append(iono)
     ionos = xr.concat(ionos, pd.Index(tstamps, name='tstamp'))
-    ionos.to_netcdf(f'{MODEL_DIR}/vert_{date}.nc')
+    ionos.to_netcdf(model_dir / f'vert_{date}.nc')
     return ionos
-# %%
 
 
-def fill_array(arr: np.ndarray, tstamps: List[dt.datetime], axis: int = 1) -> Tuple[List[dt.datetime], np.ndarray]:
-    if arr.ndim != 2:
-        raise ValueError('Array must be 2 dim')
-    if axis >= arr.ndim or axis < 0:
-        raise ValueError('Axis invalid')
-    ts = np.asarray(list(map(lambda t: t.timestamp(), tstamps)), dtype=float)
-    dts = np.diff(ts)
-    t_delta = dts.min()
-    gaps = dts[np.where(dts > t_delta)[0]]
-    gaps = np.asarray(gaps // t_delta, dtype=int)
-    dts = np.diff(dts)
-    oidx = np.where(dts < 0)[0]
-    if len(oidx) == 0:
-        return tstamps, arr
-    tstamps = []
-    tlen = int((ts[-1] - ts[0]) // t_delta) + 1
-    for idx in range(tlen):
-        tstamps.append(dt.datetime.fromtimestamp(
-            ts[0] + t_delta*idx).astimezone(pytz.utc))
-    if axis == 0:
-        out = np.full((tlen, arr.shape[1]), dtype=arr.dtype, fill_value=np.nan)
-    elif axis == 1:
-        out = np.full((arr.shape[0], tlen), dtype=arr.dtype, fill_value=np.nan)
-    else:
-        raise RuntimeError('Should not reach')
-    start = 0
-    dstart = 0
-    for idx, oi in enumerate(oidx):
-        if axis == 0:
-            out[start:oi+1] = arr[dstart:oi+1]
-        else:
-            out[:, start:oi+1] = arr[:, dstart:oi+1]
-        start = oi + gaps[idx]
-        dstart = oi + 1
-        if idx == len(oidx) - 1:  # end
-            if axis == 0:
-                out[start:] = arr[dstart:]
-            else:
-                out[:, start:] = arr[:, dstart:]
-    return (tstamps, out)
-# %%
-
-
-def make_color_axis(ax: plt.Axes | Iterable, position: str = 'right', size: str = '1.5%', pad: float = 0.05) -> plt.Axes | list:
-    if isinstance(ax, Iterable):
-        mmake_color_axis = partial(
-            make_color_axis, position=position, size=size, pad=pad)
-        cax = list(map(mmake_color_axis, ax))
-        return cax
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes(position, size=size, pad=pad)
-    return cax
-
-# %% GPS TEC
-
-
-def geocent_to_geodet(lat: Numeric, ell: Tuple[Numeric, Numeric] = (6378137.0, 6356752.3142)) -> Numeric:
-    """Converts geocentric latitude to geodetic latitude
-
-    Args:
-        lat (Numeric): Geographic latitude (degrees)
-        ell (Tuple[Numeric, Numeric], optional): Semi-major and semi-minor axes. Defaults to WGS84(6378137.0, 6356752.3142).
-
-    Returns:
-        Numeric: Geodedic latitude (degrees)
-    """
-    a, b = ell
-    assert (a > 0 and b > 0)
-    return np.rad2deg(np.arctan2(a*np.tan(np.deg2rad(lat)), b))
-
-
-def geodet_to_geocent(lat: Numeric, ell: Tuple[Numeric, Numeric] = (6378137.0, 6356752.3142)) -> Numeric:
-    """Converts geodetic latitude to geocentric latitude
-
-    Args:
-        lat (Numeric): Geodetic latitude (degrees)
-        ell (Tuple[Numeric, Numeric], optional): Semi-major and semi-minor axes. Defaults to WGS84(6378137.0, 6356752.3142).
-
-    Returns:
-        Numeric: Geocentric latitude (degrees)
-    """
-    a, b = ell
-    assert (a > 0 and b > 0)
-    return np.rad2deg(np.arctan(b*np.tan(np.deg2rad(lat))/a))
-
-
-@staticvars(gpstec=None)
-def get_gps_tec(tstart: Numeric, tstop: Numeric, latrange: slice = None, lonrange: slice = None, *, fname: str = 'gpstec_lowell.nc') -> xr.Dataset:
-    if get_gps_tec.gpstec is None:
-        get_gps_tec.gpstec = xr.open_dataset(fname)
-    gpstec: xr.Dataset = get_gps_tec.gpstec
-    gpstec = gpstec.sel(timestamps=slice(tstart, tstop))
-    if latrange is not None:
-        gpstec = gpstec.sel(gdlat=latrange)
-    if lonrange is not None:
-        gpstec = gpstec.sel(glon=lonrange)
-    return gpstec
-# %%
-
-
-def get_tec(iono: xr.Dataset) -> np.ndarray:
-    try:
-        from scipy.integrate import trapezoid as trapz
-    except ImportError:
-        from scipy.integrate import trapz
-    ne = iono['NeOut'].values.copy()
-    ne = np.nan_to_num(ne, nan=0)
-    alt = iono['alt_km'].values
-    tsh, _ = ne.shape
-    tec = np.zeros(tsh)
-    for idx in range(tsh):
-        tec[idx] += 2*trapz(ne[idx, :], alt)
-    tec *= 1e9  # convert to m^-2
-    return tec
-
-
-def plot_tec(date: str, ax: plt.Axes) -> Tuple[dt.datetime, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
+# type: ignore
+def plot_tec(settings: Directories, date: str, ax: Axes) -> Tuple[dt.datetime, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
     import digisondeindices as di
-    iono = xr.load_dataset(f'{MODEL_DIR}/vert_{date}.nc')
+    iono = xr.load_dataset(settings.model_dir / f'vert_{date}.nc')
     tstamps = iono.tstamp.values
     print(tstamps[0], tstamps[-1])
     lat, lon = 42.64981361744372, -71.31681056737486
@@ -281,7 +87,7 @@ def plot_tec(date: str, ax: plt.Axes) -> Tuple[dt.datetime, np.ndarray, np.ndarr
     gpsstart = int(tstamps[0])*1e-9 - 600
     gpsstop = int(tstamps[-1])*1e-9 + 600
     gpstec = get_gps_tec(gpsstart, gpsstop, latrange=slice(
-        dlat-0.5, lat+0.5), lonrange=slice(lon-0.5, lon+0.5))
+        dlat-0.5, lat+0.5), lonrange=slice(lon-0.5, lon+0.5))  # type: ignore
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
     start: dt.datetime = tstamps[0].astimezone(pytz.timezone('US/Eastern'))
     start = dt.datetime(start.year, start.month, start.day,
@@ -294,7 +100,7 @@ def plot_tec(date: str, ax: plt.Axes) -> Tuple[dt.datetime, np.ndarray, np.ndarr
     et = end.strftime('%Y-%m-%d %H:%M')
     tstamps_ = list(
         map(lambda t: dt.datetime.fromtimestamp(t, pytz.utc), tstamps))
-    ds = di.get_indices(tstamps_, 'MHJ45')
+    ds = di.get_indices(tstamps_, 'MHJ45')  # type: ignore
     tec_tstamp = np.asarray(np.asarray(
         ds.time.values, dtype=int), dtype=float)*1e-9
     tec_val = ds.TEC.values.copy()*1e-16
@@ -366,16 +172,32 @@ def interpolate_nan(y0: np.ndarray, x0: np.ndarray, x: np.ndarray) -> np.ndarray
 
 
 # %%
-if __name__ == '__main__':
-    files = glob.glob(f'{MODEL_DIR}/fitres*.xz')
+if not is_interactive_session():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='Fit TEC from GLOW model and GPS data')
+    parser.add_argument('suffix', type=str, default=None, nargs='?',
+                        help='Suffix for the directories')
+    args = parser.parse_args()
+    if args.suffix is None or args.suffix.strip() == '':
+        args.suffix = None
+    dirs = Directories(suffix=args.suffix)
+
+    # glob.glob(f'{MODEL_DIR}/fitres*.xz')
+    files = list(dirs.model_dir.glob('fitres*.xz'))
     files.sort(key=get_date)
 
     dates = list(map(get_date, files))
     lat, lon = 42.64981361744372, -71.31681056737486
 
     with multiprocessing.Pool(4) as pool:
-        res = pool.map(generate_vert, zip(dates, files))
-    ionos = res[0]
+        res = pool.starmap(generate_vert, zip(
+            repeat(dirs.model_dir), dates, files))
+    try:
+        ionos = res[0]
+    except IndexError:
+        print(f'No data found for {dirs.model_dir}. Please run the model first.')
+        exit(1)
 
     num_rows = int(np.floor(len(dates) / 2))  # 2 columns
     fig, axes = plt.subplots(num_rows, 2, figsize=(
@@ -395,7 +217,7 @@ if __name__ == '__main__':
     tot_digicorr = 1
     tot_gpscorr = 1
 
-    with open(f'{FITPROPS_DIR}/tec_correlation.csv', 'w') as csvout, open(f'{FITPROPS_DIR}/tec_correlation.tex', 'w') as texout:
+    with open(dirs.fitprops_dir / f'tec_correlation.csv', 'w') as csvout, open(dirs.fitprops_dir / f'tec_correlation.tex', 'w') as texout:
         csvout.write('Date,Digisonde Correlation,GPS Correlation')
         texout.write(
             r"""
@@ -405,18 +227,18 @@ Date & Digisonde Correlation & GNSS Correlation \\
 \hline"""
         )
         for date, ax in zip(dates, axes.flatten()):
-            start, _, _, _, _, digicorr, gpscorr = plot_tec(date, ax)
+            start, _, _, _, _, digicorr, gpscorr = plot_tec(dirs, date, ax)
             tot_digicorr *= digicorr
             tot_gpscorr *= gpscorr
             csvout.write(f'\n{start:%Y-%m-%d},{digicorr:.2f},{gpscorr:.2f}')
             texout.write(
-                f'\n{start:%Y-%m-%d} & {digicorr:.2f}\% & {gpscorr:.2f}\% \\\\')
+                f'\n{start:%Y-%m-%d} & {digicorr:.2f}% & {gpscorr:.2f}% \\\\')
 
         tot_digicorr = tot_digicorr**(1/len(dates))
         tot_gpscorr = tot_gpscorr**(1/len(dates))
         csvout.write(f'\nGeomean,{tot_digicorr:.2f},{tot_gpscorr:.2f}')
         texout.write(
-            f'\n\\hline\nGeomean & {tot_digicorr:.2f}\% & {tot_gpscorr:.2f}\% \\\\')
+            f'\n\\hline\nGeomean & {tot_digicorr:.2f}% & {tot_gpscorr:.2f}% \\\\')
         texout.write(
             r"""
 \hline
@@ -437,7 +259,10 @@ Date & Digisonde Correlation & GNSS Correlation \\
         xticks = list(map(lambda x: fmt_time(x, start), xticks))
         ax.set_xticklabels(xticks, rotation=45)
         ax.set_xlabel("Local Time (UTC$-$05:00)")
-    plt.savefig(f'{FITPROPS_DIR}/tec_profile.pdf',
+    plt.savefig(f'{dirs.fitprops_dir}/tec_profile.pdf',
                 dpi=600, bbox_inches='tight')
-    plt.show()
+    if is_interactive_session():
+        plt.show()
+    else:
+        plt.close(fig)
 # %%

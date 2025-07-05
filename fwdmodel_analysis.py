@@ -1,64 +1,26 @@
 # %% Imports
 from __future__ import annotations
-from settings import COUNTS_DIR, MODEL_DIR, KEOGRAMS_DIR
-from collections.abc import Iterable
+from common_funcs import fill_array, geocent_to_geodet, make_color_axis
+from settings import Directories, is_interactive_session
 import datetime as dt
-from functools import partial
-import gc
-import lzma
-import pickle
-from typing import List, Tuple, SupportsFloat as Numeric
-from scipy import ndimage
+from typing import Tuple, SupportsFloat as Numeric, Iterable
 from skmpython import staticvars
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import sys
-import glob
-from scipy.optimize import curve_fit
-from pysolar import solar
 import pytz
-from matplotlib.pyplot import cm
-
-from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter1d
-import geomagdata as gi
 import digisondeindices as di
-
-import glow2d
-from tqdm import tqdm
-
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib import rc, ticker
+from matplotlib import ticker
 import matplotlib
 import pandas as pd
-from dateutil.parser import parse
 
-usetex = False
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
-if not usetex:
-    # computer modern math text
-    matplotlib.rcParams.update({'mathtext.fontset': 'cm'})
-rc('font', **{'family': 'serif',
-   'serif': ['Times' if usetex else 'Times New Roman']})
-# for Palatino and other serif fonts use:
-# rc('font',**{'family':'serif','serif':['Palatino']})
-rc('text', usetex=usetex)
-
-# %%
-
-
-def make_color_axis(ax: plt.Axes | Iterable, position: str = 'right', size: str = '1.5%', pad: float = 0.05) -> plt.Axes | list:
-    if isinstance(ax, Iterable):
-        mmake_color_axis = partial(
-            make_color_axis, position=position, size=size, pad=pad)
-        cax = list(map(mmake_color_axis, ax))
-        return cax
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes(position, size=size, pad=pad)
-    return cax
-
+dirs = Directories()
+COUNTS_DIR = dirs.counts_dir
+MODEL_DIR = dirs.model_dir
+KEOGRAMS_DIR = dirs.keograms_dir
 
 # %%
 sds = xr.load_dataset('keo_scale.nc')
@@ -71,113 +33,27 @@ za_max = sds['za_max'].values
 # %%
 
 
-def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None):
-    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x)
-    y = gaussian_filter1d(y, sigma=sigma)
-    if round is not None:
-        y = np.round(y, decimals=round)
-    return y
-
-
-def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    tdtime = list(map(lambda t: pd.to_datetime(
-        t).to_pydatetime().astimezone(pytz.utc), tstamps))
-    tdtime_in = [tdtime[0] - dt.timedelta(hours=6), tdtime[0] - dt.timedelta(hours=3)] + tdtime + [
-        tdtime[-1] + dt.timedelta(hours=3), tdtime[-1] + dt.timedelta(hours=6)]
-    ttidx = np.asarray(list(map(lambda t: t.timestamp(), tdtime)))
-    pdtime = []
-    f107a = []
-    f107 = []
-    f107p = []
-    ap = []
-    for td in tdtime_in:
-        ip = gi.get_indices(
-            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware)
-        f107a.append(ip["f107s"].iloc[1])
-        f107.append(ip['f107'].iloc[1])
-        f107p.append(ip['f107'].iloc[0])
-        ap.append(ip["Ap"].iloc[1])
-        pdtime.append(pd.to_datetime(
-            ip.index[1].value).to_pydatetime().timestamp())
-    pdtime = np.asarray(pdtime)
-    ap = np.asarray(ap)
-    f107a = np.asarray(f107a)
-    f107 = np.asarray(f107)
-    f107p = np.asarray(f107p)
-
-    ap = do_interp_smoothing(ttidx, pdtime, ap, round=0)  # rounds to integer
-    f107 = do_interp_smoothing(ttidx, pdtime, f107)  # does not round
-    f107a = do_interp_smoothing(ttidx, pdtime, f107a)  # does not round
-    f107p = do_interp_smoothing(ttidx, pdtime, f107p)  # does not round
-
-    return tdtime, ap, f107, f107a, f107p
-# %%
-
-
-def fill_array(arr: np.ndarray, tstamps: List[dt.datetime], axis: int = 1) -> Tuple[List[dt.datetime], np.ndarray]:
-    if arr.ndim != 2:
-        raise ValueError('Array must be 2 dim')
-    if axis >= arr.ndim or axis < 0:
-        raise ValueError('Axis invalid')
-    ts = np.asarray(list(map(lambda t: t.timestamp(), tstamps)), dtype=float)
-    dts = np.diff(ts)
-    t_delta = dts.min()
-    gaps = dts[np.where(dts > t_delta)[0]]
-    gaps = np.asarray(gaps // t_delta, dtype=int)
-    dts = np.diff(dts)
-    oidx = np.where(dts < 0)[0]
-    if len(oidx) == 0:
-        return tstamps, arr
-    tstamps = []
-    tlen = int((ts[-1] - ts[0]) // t_delta) + 1
-    for idx in range(tlen):
-        tstamps.append(dt.datetime.fromtimestamp(
-            ts[0] + t_delta*idx).astimezone(pytz.utc))
-    if axis == 0:
-        out = np.full((tlen, arr.shape[1]), dtype=arr.dtype, fill_value=np.nan)
-    elif axis == 1:
-        out = np.full((arr.shape[0], tlen), dtype=arr.dtype, fill_value=np.nan)
-    else:
-        raise RuntimeError('Should not reach')
-    start = 0
-    dstart = 0
-    for idx, oi in enumerate(oidx):
-        if axis == 0:
-            out[start:oi+1] = arr[dstart:oi+1]
-        else:
-            out[:, start:oi+1] = arr[:, dstart:oi+1]
-        start = oi + gaps[idx]
-        dstart = oi + 1
-        if idx == len(oidx) - 1:  # end
-            if axis == 0:
-                out[start:] = arr[dstart:]
-            else:
-                out[:, start:] = arr[:, dstart:]
-    return (tstamps, out)
-# %%
-
-
 def fmt_time(x: Numeric, ofst: dt.datetime) -> str:
-    x = dt.timedelta(hours=x)
-    res = ofst + x
+    x = dt.timedelta(hours=x) # type: ignore
+    res = ofst + x # type: ignore
     return res.strftime('%H:%M')
 
 
 # %% Dates
 filter = True
-dates = glob.glob(f'{COUNTS_DIR}hitmis_cts_*.nc')
-dates = list(map(lambda x: x.split('_')[-1].split('.')[0], dates))
+dates = list(COUNTS_DIR.glob('hitmis_cts_*.nc')) # glob.glob(COUNTS_DIR / f'hitmis_cts_*.nc')
+dates = list(map(lambda x: x.name.split('_')[-1].split('.')[0], dates))
 if filter:
-    dates_ = glob.glob(f'{MODEL_DIR}/fwdmodel_*.nc')
-    dates_ = list(map(lambda x: x.split('_')[-1].split('.')[0], dates_))
+    dates_ = list(MODEL_DIR.glob('fwdmodel_*.nc'))
+    dates_ = list(map(lambda x: x.name.split('_')[-1].split('.')[0], dates_))
     dates = list(set(dates).intersection(dates_))
 dates.sort()
 # %% Keogram
 za_idx = 20
 for fidx, date in enumerate(dates):
-    ds = xr.load_dataset(f'{COUNTS_DIR}hitmis_cts_{date}.nc')
+    ds = xr.load_dataset(COUNTS_DIR / f'hitmis_cts_{date}.nc')
     if filter:
-        mds = xr.load_dataset(f'{MODEL_DIR}/fwdmodel_{date}.nc')
+        mds = xr.load_dataset(MODEL_DIR / f'fwdmodel_{date}.nc')
         ds = ds.loc[dict(tstamp=mds.tstamp.values)]
     height = sds.height.values
     dheight = np.diff(height).mean()
@@ -191,12 +67,12 @@ for fidx, date in enumerate(dates):
     imgs_6306 = ds['6306'].values.T[::-1, :]*scale_6300[::-1, None] / dheight * 4*np.pi*1e-6
     stds_6306 = ds['6306'].values.T[::-1, :]*scale_6300[::-1, None] / dheight * 4*np.pi*1e-6
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
-    _, imgs_5577 = fill_array(imgs_5577, tstamps)
-    _, stds_5577 = fill_array(stds_5577, tstamps)
-    _, imgs_6300 = fill_array(imgs_6300, tstamps)
-    _, stds_6300 = fill_array(stds_6300, tstamps)
-    _, imgs_6306 = fill_array(imgs_6306, tstamps)
-    tstamps, stds_6306 = fill_array(stds_6306, tstamps)
+    _, imgs_5577, _ = fill_array(imgs_5577, tstamps) # type: ignore
+    _, stds_5577, _ = fill_array(stds_5577, tstamps) # type: ignore
+    _, imgs_6300, _ = fill_array(imgs_6300, tstamps) # type: ignore
+    _, stds_6300, _ = fill_array(stds_6300, tstamps) # type: ignore
+    _, imgs_6306, _ = fill_array(imgs_6306, tstamps) # type: ignore
+    tstamps, stds_6306, _ = fill_array(stds_6306, tstamps) # type: ignore
     start = tstamps[0].astimezone(pytz.timezone('US/Eastern'))
     start = pd.to_datetime(start).round('1h').to_pydatetime()
     # start = dt.datetime(start.year, start.month, start.day,
@@ -239,38 +115,38 @@ for fidx, date in enumerate(dates):
         #     return r'${}^\circ$'.format(x)
         # else:
             return r'${:.1f}^\circ$'.format(x)
-    ax[0].yaxis.set_major_formatter(fmt2)
-    ax[0].locator_params(axis='y', nbins=7)
-    ax[1].yaxis.set_major_formatter(fmt2)
-    ax[1].locator_params(axis='y', nbins=7)
-    ax[2].yaxis.set_major_formatter(fmt2)
-    ax[2].locator_params(axis='y', nbins=7)
-    for axs in ax:
+    ax[0].yaxis.set_major_formatter(fmt2) # type: ignore
+    ax[0].locator_params(axis='y', nbins=7) # type: ignore
+    ax[1].yaxis.set_major_formatter(fmt2) # type: ignore
+    ax[1].locator_params(axis='y', nbins=7) # type: ignore
+    ax[2].yaxis.set_major_formatter(fmt2) # type: ignore
+    ax[2].locator_params(axis='y', nbins=7) # type: ignore
+    for axs in ax: # type: ignore
         axs.set_ylabel('Elevation')
-    [ax[i].set_title(wl) for i, wl in enumerate(('5577 Å (Green)', '6300 Å (Red)', '6306 Å (Cloud Indicator)'))]
-    im = ax[0].pcolormesh(tx, hy, np.log10(imgs_5577), cmap='bone')#, vmin=1.5, vmax=4)
+    [ax[i].set_title(wl) for i, wl in enumerate(('5577 Å (Green)', '6300 Å (Red)', '6306 Å (Cloud Indicator)'))] # type: ignore
+    im = ax[0].pcolormesh(tx, hy, np.log10(imgs_5577), cmap='Greens')#, vmin=1.5, vmax=4) # type: ignore
     # im = ax[0].imshow(np.log10(imgs_5577), aspect='auto', extent=(0, (tstamps[-1] - tstamps[0]).total_seconds()/3600, np.rad2deg(height[0]), np.rad2deg(height[-1])), cmap='bone') #, vmin=1.5, vmax=4)
-    cbar = fig.colorbar(im, cax=cax[0], shrink=0.5, format=fmt)
+    cbar = fig.colorbar(im, cax=cax[0], shrink=0.5, format=fmt) # type: ignore
     cbar.ax.locator_params(nbins=5)
     cbar.ax.tick_params(labelsize=8)
     cbar.ax.set_ylabel('Intensity (R)', fontsize=8)
-    im = ax[1].pcolormesh(tx, hy, np.log10(imgs_6300), cmap='bone')#, vmin=1.5, vmax=4)
+    im = ax[1].pcolormesh(tx, hy, np.log10(imgs_6300), cmap='Reds')#, vmin=1.5, vmax=4) # type: ignore
     # im = ax[1].imshow(np.log10(imgs_6300), aspect='auto', extent=(0, (tstamps[-1] - tstamps[0]).total_seconds()/3600, np.rad2deg(height[0]), np.rad2deg(height[-1])), cmap='bone') #, vmin=1.5, vmax=4)
-    cbar = fig.colorbar(im, cax=cax[1], shrink=0.5, format=fmt)
+    cbar = fig.colorbar(im, cax=cax[1], shrink=0.5, format=fmt) # type: ignore
     cbar.ax.locator_params(nbins=5)
     cbar.ax.tick_params(labelsize=8)
     cbar.ax.set_ylabel('Intensity (R)', fontsize=8)
-    im = ax[2].pcolormesh(tx, hy, np.log10(imgs_6306), cmap='bone', vmin=np.nanpercentile(np.log10(imgs_6306), 1), vmax=np.nanpercentile(np.log10(imgs_6306), 99))
+    im = ax[2].pcolormesh(tx, hy, np.log10(imgs_6306), cmap='bone', vmin=np.nanpercentile(np.log10(imgs_6306), 1), vmax=np.nanpercentile(np.log10(imgs_6306), 99)) # type: ignore
     # im = ax[2].imshow(np.log10(imgs_6306), aspect='auto', extent=(0, (tstamps[-1] - tstamps[0]).total_seconds()/3600, np.rad2deg(height[0]), np.rad2deg(height[-1])), cmap='bone', vmin=np.nanpercentile(np.log10(imgs_6306), 1), vmax=np.nanpercentile(np.log10(imgs_6306), 99))
-    cbar=fig.colorbar(im, cax=cax[2], shrink=0.5, format=fmt)
+    cbar=fig.colorbar(im, cax=cax[2], shrink=0.5, format=fmt) # type: ignore
     cbar.ax.locator_params(nbins=5)
     cbar.ax.tick_params(labelsize=8)
     cbar.ax.set_ylabel('Intensity (R)', fontsize=8)
-    ax[-1].set_xlim(0, 9)
+    ax[-1].set_xlim(0, 9) # type: ignore
     xticks = np.arange(10).astype(float)
     xticks = list(map(lambda x: fmt_time(x, start), xticks))
-    ax[-1].set_xticklabels(xticks)
-    ax[-1].set_xlabel("Local Time")
+    ax[-1].set_xticklabels(xticks) # type: ignore
+    ax[-1].set_xlabel("Local Time") # type: ignore
     if nanfill:
         # 1. create axis
         trange = np.linspace(0, (tstamps[-1] - tstamps[0]).total_seconds()/3600, len(imgs_6300[0, :]), endpoint=True)
@@ -278,55 +154,27 @@ for fidx, date in enumerate(dates):
         tmax = nanloc[-1] + 1
         trange = trange[tmin:tmax + 1]
         # 2. Find nan locs
-        ax[0].text((trange[-1] + trange[0])*0.5, np.mean(height_ang), 'Unavailable', ha='center', va='center', fontsize=8, rotation='vertical', color='r')
-        ax[1].text((trange[-1] + trange[0])*0.5, np.mean(height_ang), 'Unavailable', ha='center', va='center', fontsize=8, rotation='vertical', color='r')
-        ax[2].text((trange[-1] + trange[0])*0.5, np.mean(height_ang), 'Unavailable', ha='center', va='center', fontsize=8, rotation='vertical', color='r')
-    plt.savefig(f'{KEOGRAMS_DIR}/hitmis_keo_{date}.pdf')
-    plt.show()
+        ax[0].text((trange[-1] + trange[0])*0.5, np.mean(height_ang), 'Unavailable', ha='center', va='center', fontsize=8, rotation='vertical', color='r') # type: ignore
+        ax[1].text((trange[-1] + trange[0])*0.5, np.mean(height_ang), 'Unavailable', ha='center', va='center', fontsize=8, rotation='vertical', color='r') # type: ignore
+        ax[2].text((trange[-1] + trange[0])*0.5, np.mean(height_ang), 'Unavailable', ha='center', va='center', fontsize=8, rotation='vertical', color='r') # type: ignore
+    plt.savefig(KEOGRAMS_DIR / f'hitmis_keo_{date}.pdf')
+    if is_interactive_session():
+        plt.show()
+    else:
+        plt.close(fig)
 # %% GPS TEC
-
-
-def geocent_to_geodet(lat: Numeric, ell: Tuple[Numeric, Numeric] = (6378137.0, 6356752.3142)) -> Numeric:
-    """Converts geocentric latitude to geodetic latitude
-
-    Args:
-        lat (Numeric): Geographic latitude (degrees)
-        ell (Tuple[Numeric, Numeric], optional): Semi-major and semi-minor axes. Defaults to WGS84(6378137.0, 6356752.3142).
-
-    Returns:
-        Numeric: Geodedic latitude (degrees)
-    """
-    a, b = ell
-    assert (a > 0 and b > 0)
-    return np.rad2deg(np.arctan2(a*np.tan(np.deg2rad(lat)), b))
-
-
-def geodet_to_geocent(lat: Numeric, ell: Tuple[Numeric, Numeric] = (6378137.0, 6356752.3142)) -> Numeric:
-    """Converts geodetic latitude to geocentric latitude
-
-    Args:
-        lat (Numeric): Geodetic latitude (degrees)
-        ell (Tuple[Numeric, Numeric], optional): Semi-major and semi-minor axes. Defaults to WGS84(6378137.0, 6356752.3142).
-
-    Returns:
-        Numeric: Geocentric latitude (degrees)
-    """
-    a, b = ell
-    assert (a > 0 and b > 0)
-    return np.rad2deg(np.arctan(b*np.tan(np.deg2rad(lat))/a))
-
 
 @staticvars(gpstec=None)
 def get_gps_tec(tstamps: Iterable[Numeric], lat: Iterable[Numeric], lon: Iterable[Numeric], angle: Iterable[Numeric], *, fname: str = 'gpstec_lowell.nc') -> xr.Dataset:
-    if get_gps_tec.gpstec is None:
-        get_gps_tec.gpstec = xr.open_dataset(fname)
-    gpstec: xr.Dataset = get_gps_tec.gpstec
-    gdlat = geocent_to_geodet(lat)
-    assert (len(gdlat) == len(lon) == len(angle))
+    if get_gps_tec.gpstec is None: # type: ignore
+        get_gps_tec.gpstec = xr.open_dataset(fname) # type: ignore
+    gpstec: xr.Dataset = get_gps_tec.gpstec # type: ignore
+    gdlat = geocent_to_geodet(lat) # type: ignore
+    assert (len(gdlat) == len(lon) == len(angle)) # type: ignore
     gpstec = gpstec.sel(timestamps=tstamps, method='nearest')
-    tecvals = np.zeros((len(tstamps), len(angle)))
-    dtecvals = np.zeros((len(tstamps), len(angle)))
-    for idx, (gl, lo) in enumerate(zip(gdlat, lon)):
+    tecvals = np.zeros((len(tstamps), len(angle))) # type: ignore
+    dtecvals = np.zeros((len(tstamps), len(angle))) # type: ignore
+    for idx, (gl, lo) in enumerate(zip(gdlat, lon)): # type: ignore
         val = gpstec.sel(gdlat=gl, method='nearest')
         val = val.sel(glon=lo, method='nearest')
         tecvals[:, idx] = val.tec.values
@@ -354,9 +202,9 @@ matplotlib.rcParams.update({'axes.titlesize': 10})
 matplotlib.rcParams.update({'axes.labelsize': 10})
 
 for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
-    ax: plt.Axes = ax
-    ds = xr.load_dataset(f'{COUNTS_DIR}hitmis_cts_{date}.nc')
-    mds = xr.load_dataset(f'{MODEL_DIR}/fwdmodel_{date}.nc')
+    ax: plt.Axes = ax # type: ignore
+    ds = xr.load_dataset(COUNTS_DIR / f'hitmis_cts_{date}.nc')
+    mds = xr.load_dataset(MODEL_DIR / f'fwdmodel_{date}.nc')
     ds = ds.loc[dict(tstamp=mds.tstamp.values)]
     tstamps = ds.tstamp.values
     lat, lon = 42.64981361744372, -71.31681056737486
@@ -384,15 +232,15 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     except Exception:
         continue
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
-    _, imgs_5577 = fill_array(imgs_5577, tstamps)
-    _, stds_5577 = fill_array(stds_5577, tstamps)
-    _, imgs_6300 = fill_array(imgs_6300, tstamps)
-    _, stds_6300 = fill_array(stds_6300, tstamps)
-    _, imgs_6306 = fill_array(imgs_6306, tstamps)
-    _, stds_6306 = fill_array(stds_6306, tstamps)
-    _, mds_5577 = fill_array(mds_5577, tstamps)
-    _, mds_ap = fill_array(mds_ap[:, None], tstamps, axis=0)
-    tstamps, mds_6300 = fill_array(mds_6300, tstamps)
+    _, imgs_5577, _ = fill_array(imgs_5577, tstamps) # type: ignore
+    _, stds_5577, _ = fill_array(stds_5577, tstamps) # type: ignore
+    _, imgs_6300, _ = fill_array(imgs_6300, tstamps) # type: ignore
+    _, stds_6300, _ = fill_array(stds_6300, tstamps) # type: ignore
+    _, imgs_6306, _ = fill_array(imgs_6306, tstamps) # type: ignore
+    _, stds_6306, _ = fill_array(stds_6306, tstamps) # type: ignore
+    _, mds_5577, _ = fill_array(mds_5577, tstamps) # type: ignore
+    _, mds_ap, _ = fill_array(mds_ap[:, None], tstamps, axis=0) # type: ignore
+    tstamps, mds_6300, _ = fill_array(mds_6300, tstamps) # type: ignore
     # _, mds_ap, _, _, _ = get_smoothed_geomag(tstamps)
 
     start = tstamps[0].astimezone(pytz.timezone('US/Eastern'))
@@ -519,7 +367,7 @@ for idx, ax in enumerate(axes.flatten()):
 for k, v in datagaps.items():
     ax = axes.flatten()[k]
     ylim = ax.get_ylim()
-    ax.text(v[0], np.mean(ylim), 'Data Unavailable', ha='center',
+    ax.text(v[0], np.mean(ylim), 'Data Unavailable', ha='center', # type: ignore
             va='top', fontsize=8, color='r', rotation='vertical')
 
 for ax in axes.flatten()[-2:]:
@@ -528,9 +376,12 @@ for ax in axes.flatten()[-2:]:
     xticks = list(map(lambda x: fmt_time(x, start), xticks))
     ax.set_xticklabels(xticks, rotation=45)
     ax.set_xlabel("Local Time (UTC$-$05:00)")
-fig.savefig(f'{KEOGRAMS_DIR}/fwdmodel_lowell.pdf',
+fig.savefig(KEOGRAMS_DIR / 'fwdmodel_lowell.pdf',
             dpi=600, bbox_inches='tight')
-plt.show()
+if is_interactive_session():
+    plt.show()
+else:
+    plt.close(fig)
 # %%
 
 
@@ -580,9 +431,9 @@ matplotlib.rcParams.update({'axes.titlesize': 10})
 matplotlib.rcParams.update({'axes.labelsize': 10})
 
 for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
-    ax: plt.Axes = ax
-    ds = xr.load_dataset(f'{COUNTS_DIR}hitmis_cts_{date}.nc')
-    mds = xr.load_dataset(f'{MODEL_DIR}/fwdmodel_{date}.nc')
+    ax: plt.Axes = ax # type: ignore
+    ds = xr.load_dataset(COUNTS_DIR / f'hitmis_cts_{date}.nc')
+    mds = xr.load_dataset(MODEL_DIR / f'fwdmodel_{date}.nc')
     ds = ds.loc[dict(tstamp=mds.tstamp.values)]
     tstamps = ds.tstamp.values
     lat, lon = 42.64981361744372, -71.31681056737486
@@ -611,16 +462,16 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
         continue
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
     dds = di.get_indices(tstamps, 'MHJ45')
-    _, imgs_5577 = fill_array(imgs_5577, tstamps)
-    _, stds_5577 = fill_array(stds_5577, tstamps)
-    _, imgs_6300 = fill_array(imgs_6300, tstamps)
-    _, stds_6300 = fill_array(stds_6300, tstamps)
-    _, imgs_6306 = fill_array(imgs_6306, tstamps)
-    _, stds_6306 = fill_array(stds_6306, tstamps)
-    _, mds_5577 = fill_array(mds_5577, tstamps)
-    _, mds_ap = fill_array(mds_ap[:, None], tstamps, axis=0)
-    _, hmf = fill_array(dds['hmF'].values[:, None], tstamps, axis=0)
-    tstamps, mds_6300 = fill_array(mds_6300, tstamps)
+    _, imgs_5577, _ = fill_array(imgs_5577, tstamps) # type: ignore
+    _, stds_5577, _ = fill_array(stds_5577, tstamps) # type: ignore
+    _, imgs_6300, _ = fill_array(imgs_6300, tstamps) # type: ignore
+    _, stds_6300, _ = fill_array(stds_6300, tstamps) # type: ignore
+    _, imgs_6306, _ = fill_array(imgs_6306, tstamps) # type: ignore
+    _, stds_6306, _ = fill_array(stds_6306, tstamps) # type: ignore
+    _, mds_5577, _ = fill_array(mds_5577, tstamps) # type: ignore
+    _, mds_ap, _ = fill_array(mds_ap[:, None], tstamps, axis=0) # type: ignore
+    _, hmf, _ = fill_array(dds['hmF'].values[:, None], tstamps, axis=0) # type: ignore
+    tstamps, mds_6300, _ = fill_array(mds_6300, tstamps) # type: ignore
     # _, mds_ap, _, _, _ = get_smoothed_geomag(tstamps)
 
     start = tstamps[0].astimezone(pytz.timezone('US/Eastern'))
@@ -655,7 +506,7 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     # tax.set_ylim(0, 50)
     # l_ap, = tax.plot(ttstamps, mds_ap, ls='-.', color='k', lw=0.65)
 
-    tax: plt.Axes = ax.twinx()
+    tax: plt.Axes = ax.twinx() # type: ignore
     tax.set_ylim(180, 380)
     if fidx % 2:
         tax.set_ylabel('hmF', fontsize=8)
@@ -706,7 +557,7 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
         ax.set_ylabel('Normalized Variation')
     else:
         ax.yaxis.set_ticks_position('none')
-    lobjs = [(l_55, f_55), m_55, (l_63, f_63), m_63]  # , l_ap]
+    lobjs = [(l_55, f_55), m_55, (l_63, f_63), m_63]  # , l_ap] # type: ignore
     ltext = ['5577Å Measurement', '5577Å Model',
              '6300Å Measurement', '6300Å Model']  # , 'a$_p$ Index']
     if nanfill:
@@ -737,7 +588,7 @@ for idx, ax in enumerate(axes.flatten()):
 for k, v in datagaps.items():
     ax = axes.flatten()[k]
     ylim = ax.get_ylim()
-    ax.text(v[0], 0.5, 'Data Unavailable', ha='center',
+    ax.text(v[0], 0.5, 'Data Unavailable', ha='center', # type: ignore
             va='center', fontsize=8, color='r', rotation='vertical')
 
 for ax in axes.flatten()[-2:]:
@@ -746,6 +597,9 @@ for ax in axes.flatten()[-2:]:
     xticks = list(map(lambda x: fmt_time(x, start), xticks))
     ax.set_xticklabels(xticks, rotation=45)
     ax.set_xlabel("Local Time (UTC$-$05:00)")
-fig.savefig(f'{KEOGRAMS_DIR}/hmf_variation.pdf', dpi=600, bbox_inches='tight')
-plt.show()
+fig.savefig(KEOGRAMS_DIR / 'hmf_variation.pdf', dpi=600, bbox_inches='tight')
+if is_interactive_session():
+    plt.show()
+else:
+    plt.close(fig)
 # %%

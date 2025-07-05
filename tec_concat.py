@@ -2,12 +2,13 @@
 from glob import glob
 import os
 import re
+from typing import Optional
 from tqdm import tqdm
 import xarray as xr
 # %%
 def get_key(fname: str) -> int:
     out = os.path.basename(fname).split('.')[0]
-    return int(re.sub('\D', '', out))
+    return int(re.sub(r'\D', '', out))
 
 # Download the GNSS TEC data from the OpenMadrigal database
 # This script is used to concatenate the data into a single file
@@ -16,7 +17,7 @@ def get_key(fname: str) -> int:
 files = glob('*.hdf5') # really are netcdf files, and should be downloaded as such
 files.sort(key=get_key)
 
-ds_master = None
+ds_master: Optional[xr.Dataset] = None
 for idx, file in enumerate(tqdm(files)):
     with xr.load_dataset(file) as ds:
         if ds_master is None:
@@ -32,5 +33,6 @@ encoding = {
     'tec': {'dtype': 'float64', 'zlib': True},
 }
 # %%
-ds_master.to_netcdf('gpstec_lowell.nc', encoding=encoding)
+if ds_master is not None:
+    ds_master.to_netcdf('gpstec_lowell.nc', encoding=encoding)
 # %%

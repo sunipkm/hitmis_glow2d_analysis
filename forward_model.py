@@ -17,13 +17,16 @@ from tqdm import tqdm
 
 import pandas as pd
 
-from settings import MODEL_DIR, COUNTS_DIR
-print(f'Model directory: {MODEL_DIR}')
+from settings import Directories, is_interactive_session, ROOT_DIR
+
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
 # %%
 
 
-def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None):
-    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x)
+def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None): # type: ignore
+    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x) # type: ignore
     y = gaussian_filter1d(y, sigma=sigma)
     if round is not None:
         y = np.round(y, decimals=round)
@@ -43,7 +46,7 @@ def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.
     ap = []
     for td in tdtime_in:
         ip = gi.get_indices(
-            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware)
+            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware) # type: ignore
         f107a.append(ip["f107s"].iloc[1])
         f107.append(ip['f107'].iloc[1])
         f107p.append(ip['f107'].iloc[0])
@@ -61,11 +64,11 @@ def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.
     f107a = do_interp_smoothing(ttidx, pdtime, f107a)  # does not round
     f107p = do_interp_smoothing(ttidx, pdtime, f107p)  # does not round
 
-    return tdtime, ap, f107, f107a, f107p
+    return tdtime, ap, f107, f107a, f107p # type: ignore
 
 
 # %%
-sds = xr.load_dataset('keo_scale.nc')
+sds = xr.load_dataset(ROOT_DIR / 'keo_scale.nc')
 scale_5577 = sds['5577'].values[::-1]
 scale_6300 = sds['6300'].values[::-1]
 za_min = sds['za_min'].values
@@ -99,85 +102,91 @@ class GLOWFwd:
 
     def _update(self):
         iono = glow2d.polar_model(self._time, self._lat, self._lon, self._heading, n_pts=20,
-                                  geomag_params=self._geopar, tec=self._tec, mpool=self._pool)
-        self._tecscale = iono['tecscale'].copy()
-        ec5577 = glow2d.glow2d_polar.get_emission(
-            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1]
-        ec6300 = glow2d.glow2d_polar.get_emission(
-            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1]
+                                  geomag_params=self._geopar, tec=self._tec, mpool=self._pool) # type: ignore
+        self._tecscale = iono['tecscale'].copy() # type: ignore
+        ec5577 = glow2d.glow2d_polar.get_emission( # type: ignore
+            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1] # type: ignore
+        ec6300 = glow2d.glow2d_polar.get_emission( # type: ignore
+            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1] # type: ignore
         self._bright = [ec5577[::-1], ec6300[::-1]]
 
 
 # %%
 # dates = ['20220209']
-tec = xr.open_dataset('gpstec_lowell.nc')
-with Pool(6) as m_pool:
-    dates = ['20220126', '20220209', '20220215', '20220218',
-            '20220219', '20220226', '20220303', '20220304']
-    za_idx = 20
-    for date in dates:
-        outfile = f'{MODEL_DIR}/fwdmodel_{date}.nc'
-        if Path(outfile).exists():
-            date = dt.datetime.strptime(date, '%Y%m%d').strftime('%Y-%m-%d')
-            print(f'{outfile} exists. Skipping {date}')
-            continue
-        ds = xr.load_dataset(f'{COUNTS_DIR}/hitmis_cts_{date}.nc')
-        tstamps = ds.tstamp.values
-        start = pd.to_datetime(tstamps[0]).to_pydatetime()
-        end = pd.to_datetime(tstamps[-1]).to_pydatetime()
-        start += dt.timedelta(hours=1)
-        end -= dt.timedelta(hours=1)
-        # start = end - dt.timedelta(hours=2)
-        # end = start + dt.timedelta(hours=2)
-        ds = ds.loc[dict(tstamp=slice(start, end))]
-        tstamps = ds.tstamp.values
-        height = sds.height.values
-        dheight = np.mean(np.diff(height))
-        tstamps = list(map(lambda t: pd.to_datetime(
-            t).to_pydatetime().astimezone(pytz.utc), tstamps))
-        ttstamps = list(map(lambda i: (
-            tstamps[i] - tstamps[0]).total_seconds()/3600, range(len(tstamps))))
+def runner(model_dir: Path, counts_dir: Path):
+    tec = xr.open_dataset(ROOT_DIR / 'gpstec_lowell.nc')
+    with Pool(6) as m_pool:
+        dates = ['20220126', '20220209', '20220215', '20220218',
+                '20220219', '20220226', '20220303', '20220304']
+        za_idx = 20
+        for date in dates:
+            outfile = model_dir / f'fwdmodel_{date}.nc'
+            if Path(outfile).exists():
+                date = dt.datetime.strptime(date, '%Y%m%d').strftime('%Y-%m-%d')
+                print(f'{outfile} exists. Skipping {date}')
+                continue
+            ds = xr.load_dataset(counts_dir / f'hitmis_cts_{date}.nc')
+            tstamps = ds.tstamp.values
+            start = pd.to_datetime(tstamps[0]).to_pydatetime()
+            end = pd.to_datetime(tstamps[-1]).to_pydatetime()
+            start += dt.timedelta(hours=1)
+            end -= dt.timedelta(hours=1)
+            # start = end - dt.timedelta(hours=2)
+            # end = start + dt.timedelta(hours=2)
+            ds = ds.loc[dict(tstamp=slice(start, end))]
+            tstamps = ds.tstamp.values
+            height = sds.height.values
+            dheight = np.mean(np.diff(height))
+            tstamps = list(map(lambda t: pd.to_datetime(
+                t).to_pydatetime().astimezone(pytz.utc), tstamps))
+            ttstamps = list(map(lambda i: (
+                tstamps[i] - tstamps[0]).total_seconds()/3600, range(len(tstamps))))
 
-        lat, lon = 42.64981361744372, -71.31681056737486
-        _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps)
-        br6300 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
-        br5577 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
-        pbar = tqdm(range(len(ds.tstamp.values)))
+            lat, lon = 42.64981361744372, -71.31681056737486
+            _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps) # type: ignore
+            br6300 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
+            br5577 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
+            pbar = tqdm(range(len(ds.tstamp.values)))
 
-        for idx in pbar:
-            geomag_params = (f107a[idx], f107[idx], f107p[idx], ap[idx])
-            minf = GLOWFwd(tstamps[idx], lat, lon, 40, geomag_params=geomag_params, za_min=za_min,
-                            za_max=za_max, za_idx=za_idx, tec=tec, m_pool=m_pool)
-            out = minf.emission
-            br5577[idx, :] += out[0]
-            br6300[idx, :] += out[1]
-            pbar.set_description(f'[{pd.to_datetime(ds.tstamp.values[idx]).to_pydatetime():%Y-%m-%d %H:%M}]', refresh=True)
+            for idx in pbar:
+                geomag_params = (f107a[idx], f107[idx], f107p[idx], ap[idx])
+                minf = GLOWFwd(tstamps[idx], lat, lon, 40, geomag_params=geomag_params, za_min=za_min, # type: ignore
+                                za_max=za_max, za_idx=za_idx, tec=tec, m_pool=m_pool)
+                out = minf.emission
+                br5577[idx, :] += out[0] # type: ignore
+                br6300[idx, :] += out[1] # type: ignore
+                pbar.set_description(f'[{pd.to_datetime(ds.tstamp.values[idx]).to_pydatetime():%Y-%m-%d %H:%M}]', refresh=True)
 
 
-        kds = xr.Dataset(
-            data_vars={'5577' : (('tstamp', 'height'), br5577),
-                    '6300' : (('tstamp', 'height'), br6300),
-                    'ap'   : (('tstamp'), ap),
-                    'f107a': (('tstamp'), f107a),
-                    'f107' : (('tstamp'), f107),
-                    'f107p': (('tstamp'), f107p),
-                    'lat'  : (('tstamp'), [lat]*len(tstamps)),
-                    'lon'  : (('tstamp'), [lon]*len(tstamps)),
-                    'to_r': 1/(dheight * 4*np.pi*1e-6)},
-            coords={'tstamp': ds.tstamp.values, 'height': ds.height.values,}
-        )
-        unit_desc = {
-            '5577': ('cm^{-2} s^{-1} rad^{-1}', '5577 Brightness'),
-            '6300': ('cm^{-2} s^{-1} rad^{-1}', '6300 Brightness'),
-            'ap': ('', 'Planetary ap index (3 hour UTC)'),
-            'f107a': ('sfu', '81-day rolling average of F10.7 solar flux'),
-            'f107': ('sfu', 'F10.7 solar flux on present day'),
-            'f107p': ('sfu', 'F10.7 solar flux on previous day'),
-            'lat': ('deg', 'Latitude'),
-            'lon': ('deg', 'Longitude'),
-            'to_r': ('R rad^{-1}', 'Convert brightness to Rayleigh') 
-        }
-        _ = list(map(lambda x: kds[x].attrs.update({'units': unit_desc[x][0], 'description': unit_desc[x][1]}), unit_desc.keys()))
-        kds.to_netcdf(outfile)
+            kds = xr.Dataset(
+                data_vars={'5577' : (('tstamp', 'height'), br5577),
+                        '6300' : (('tstamp', 'height'), br6300),
+                        'ap'   : (('tstamp'), ap),
+                        'f107a': (('tstamp'), f107a),
+                        'f107' : (('tstamp'), f107),
+                        'f107p': (('tstamp'), f107p),
+                        'lat'  : (('tstamp'), [lat]*len(tstamps)),
+                        'lon'  : (('tstamp'), [lon]*len(tstamps)),
+                        'to_r': 1/(dheight * 4*np.pi*1e-6)},
+                coords={'tstamp': ds.tstamp.values, 'height': ds.height.values,}
+            )
+            unit_desc = {
+                '5577': ('cm^{-2} s^{-1} rad^{-1}', '5577 Brightness'),
+                '6300': ('cm^{-2} s^{-1} rad^{-1}', '6300 Brightness'),
+                'ap': ('', 'Planetary ap index (3 hour UTC)'),
+                'f107a': ('sfu', '81-day rolling average of F10.7 solar flux'),
+                'f107': ('sfu', 'F10.7 solar flux on present day'),
+                'f107p': ('sfu', 'F10.7 solar flux on previous day'),
+                'lat': ('deg', 'Latitude'),
+                'lon': ('deg', 'Longitude'),
+                'to_r': ('R rad^{-1}', 'Convert brightness to Rayleigh') 
+            }
+            _ = list(map(lambda x: kds[x].attrs.update({'units': unit_desc[x][0], 'description': unit_desc[x][1]}), unit_desc.keys()))
+            kds.to_netcdf(outfile)
 
 # %%
+if not is_interactive_session():
+    dirs = Directories()
+    model_dir = dirs.model_dir
+    counts_dir = dirs.counts_dir
+    runner(model_dir, counts_dir)

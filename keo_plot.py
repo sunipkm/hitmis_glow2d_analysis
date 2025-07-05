@@ -1,64 +1,29 @@
 # %% Imports
 from __future__ import annotations
-from collections.abc import Iterable
 import datetime as dt
-from functools import partial
-import gc
-import lzma
-import pickle
-from typing import List, Tuple, SupportsFloat as Numeric
-from matplotlib.gridspec import GridSpec
+from typing import SupportsFloat as Numeric
+from matplotlib.axes import Axes
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import sys
-import glob
-from scipy.optimize import curve_fit
-from pysolar import solar
 import pytz
-from matplotlib.pyplot import cm
-
-from scipy.interpolate import interp1d
-from scipy.ndimage import gaussian_filter1d
-import geomagdata as gi
 import digisondeindices as di
-
-import glow2d
-from tqdm import tqdm
-
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib import rc, ticker
+from matplotlib import ticker
 import matplotlib
 import pandas as pd
-from dateutil.parser import parse
-
-usetex = False
-
-if not usetex:
-    # computer modern math text
-    matplotlib.rcParams.update({'mathtext.fontset': 'cm'})
-rc('font', **{'family': 'serif',
-   'serif': ['Times' if usetex else 'Times New Roman']})
-# for Palatino and other serif fonts use:
-# rc('font',**{'family':'serif','serif':['Palatino']})
-rc('text', usetex=usetex)
-
-from settings import COUNTS_DIR, MODEL_DIR, KEOGRAMS_DIR
-# %%
 
 
-def make_color_axis(ax: plt.Axes | Iterable, position: str = 'right', size: str = '1.5%', pad: float = 0.05) -> plt.Axes | list:
-    if isinstance(ax, Iterable):
-        mmake_color_axis = partial(
-            make_color_axis, position=position, size=size, pad=pad)
-        cax = list(map(mmake_color_axis, ax))
-        return cax
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes(position, size=size, pad=pad)
-    return cax
+from common_funcs import fill_array
+from settings import Directories
 
+import warnings
 
+warnings.filterwarnings("ignore", category=UserWarning)
+# %% Directories
+dirsettings = Directories()
+COUNTS_DIR = dirsettings.counts_dir
+MODEL_DIR = dirsettings.model_dir
+KEOGRAMS_DIR = dirsettings.keograms_dir
 # %%
 sds = xr.load_dataset('keo_scale.nc')
 scale_5577 = sds['5577'].values[::-1]
@@ -66,99 +31,11 @@ scale_6300 = sds['6300'].values[::-1]
 za_min = sds['za_min'].values
 za_max = sds['za_max'].values
 # %%
-# dates = ['20220218']
-# %%
-
-
-def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None):
-    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x)
-    y = gaussian_filter1d(y, sigma=sigma)
-    if round is not None:
-        y = np.round(y, decimals=round)
-    return y
-
-
-def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    tdtime = list(map(lambda t: pd.to_datetime(
-        t).to_pydatetime().astimezone(pytz.utc), tstamps))
-    tdtime_in = [tdtime[0] - dt.timedelta(hours=6), tdtime[0] - dt.timedelta(hours=3)] + tdtime + [
-        tdtime[-1] + dt.timedelta(hours=3), tdtime[-1] + dt.timedelta(hours=6)]
-    ttidx = np.asarray(list(map(lambda t: t.timestamp(), tdtime)))
-    pdtime = []
-    f107a = []
-    f107 = []
-    f107p = []
-    ap = []
-    for td in tdtime_in:
-        ip = gi.get_indices(
-            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware)
-        f107a.append(ip["f107s"].iloc[1])
-        f107.append(ip['f107'].iloc[1])
-        f107p.append(ip['f107'].iloc[0])
-        ap.append(ip["Ap"].iloc[1])
-        pdtime.append(pd.to_datetime(
-            ip.index[1].value).to_pydatetime().timestamp())
-    pdtime = np.asarray(pdtime)
-    ap = np.asarray(ap)
-    f107a = np.asarray(f107a)
-    f107 = np.asarray(f107)
-    f107p = np.asarray(f107p)
-
-    ap = do_interp_smoothing(ttidx, pdtime, ap, round=0)  # rounds to integer
-    f107 = do_interp_smoothing(ttidx, pdtime, f107)  # does not round
-    f107a = do_interp_smoothing(ttidx, pdtime, f107a)  # does not round
-    f107p = do_interp_smoothing(ttidx, pdtime, f107p)  # does not round
-
-    return tdtime, ap, f107, f107a, f107p
-# %%
-
-
-def fill_array(arr: np.ndarray, tstamps: List[dt.datetime], axis: int = 1) -> Tuple[List[dt.datetime], np.ndarray]:
-    if arr.ndim != 2:
-        raise ValueError('Array must be 2 dim')
-    if axis >= arr.ndim or axis < 0:
-        raise ValueError('Axis invalid')
-    ts = np.asarray(list(map(lambda t: t.timestamp(), tstamps)), dtype=float)
-    dts = np.diff(ts)
-    t_delta = dts.min()
-    gaps = dts[np.where(dts > t_delta)[0]]
-    gaps = np.asarray(gaps // t_delta, dtype=int)
-    dts = np.diff(dts)
-    oidx = np.where(dts < 0)[0]
-    if len(oidx) == 0:
-        return tstamps, arr
-    tstamps = []
-    tlen = int((ts[-1] - ts[0]) // t_delta) + 1
-    for idx in range(tlen):
-        tstamps.append(dt.datetime.fromtimestamp(
-            ts[0] + t_delta*idx).astimezone(pytz.utc))
-    if axis == 0:
-        out = np.full((tlen, arr.shape[1]), dtype=arr.dtype, fill_value=np.nan)
-    elif axis == 1:
-        out = np.full((arr.shape[0], tlen), dtype=arr.dtype, fill_value=np.nan)
-    else:
-        raise RuntimeError('Should not reach')
-    start = 0
-    dstart = 0
-    for idx, oi in enumerate(oidx):
-        if axis == 0:
-            out[start:oi+1] = arr[dstart:oi+1]
-        else:
-            out[:, start:oi+1] = arr[:, dstart:oi+1]
-        start = oi + gaps[idx]
-        dstart = oi + 1
-        if idx == len(oidx) - 1:  # end
-            if axis == 0:
-                out[start:] = arr[dstart:]
-            else:
-                out[:, start:] = arr[:, dstart:]
-    return (tstamps, out)
-# %%
 
 
 def fmt_time(x: Numeric, ofst: dt.datetime) -> str:
-    x = dt.timedelta(hours=x)
-    res = ofst + x
+    x = dt.timedelta(hours=x) # type: ignore
+    res = ofst + x # type: ignore
     return res.strftime('%H:%M')
 
 
@@ -213,15 +90,15 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     except Exception:
         continue
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
-    _, imgs_5577 = fill_array(imgs_5577, tstamps)
-    _, stds_5577 = fill_array(stds_5577, tstamps)
-    _, imgs_6300 = fill_array(imgs_6300, tstamps)
-    _, stds_6300 = fill_array(stds_6300, tstamps)
-    _, imgs_6306 = fill_array(imgs_6306, tstamps)
-    _, stds_6306 = fill_array(stds_6306, tstamps)
-    _, mds_5577 = fill_array(mds_5577, tstamps)
-    _, mds_ap = fill_array(mds_ap[:, None], tstamps, axis=0)
-    tstamps, mds_6300 = fill_array(mds_6300, tstamps)
+    _, imgs_5577, _ = fill_array(imgs_5577, tstamps) # type: ignore
+    _, stds_5577, _ = fill_array(stds_5577, tstamps) # type: ignore
+    _, imgs_6300, _ = fill_array(imgs_6300, tstamps) # type: ignore
+    _, stds_6300, _ = fill_array(stds_6300, tstamps) # type: ignore
+    _, imgs_6306, _ = fill_array(imgs_6306, tstamps) # type: ignore
+    _, stds_6306, _ = fill_array(stds_6306, tstamps) # type: ignore
+    _, mds_5577, _ = fill_array(mds_5577, tstamps) # type: ignore
+    _, mds_ap, _ = fill_array(mds_ap[:, None], tstamps, axis=0) # type: ignore
+    tstamps, mds_6300, _ = fill_array(mds_6300, tstamps) # type: ignore
     # _, mds_ap, _, _, _ = get_smoothed_geomag(tstamps)
 
     start = tstamps[0].astimezone(pytz.timezone('US/Eastern'))
@@ -328,7 +205,7 @@ for idx, ax in enumerate(axes.flatten()):
 for k, v in datagaps.items():
     ax = axes.flatten()[k]
     ylim = ax.get_ylim()
-    ax.text(v[0], np.mean(ylim), 'Data Unavailable', ha='center',
+    ax.text(v[0], np.mean(ylim), 'Data Unavailable', ha='center', # type: ignore
             va='top', fontsize=8, color='r', rotation='vertical')
 
 for ax in axes.flatten()[-2:]:
@@ -390,12 +267,12 @@ for fidx, (date, ax) in enumerate(zip(dates, axs)):
     mds_6300 = mds['6300'].values.T[::-1, :] / dheight * 4*np.pi*1e-6
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
     dds = di.get_indices(tstamps, 'MHJ45')
-    _, imgs_5577 = fill_array(imgs_5577, tstamps)
-    _, stds_5577 = fill_array(stds_5577, tstamps)
-    _, imgs_6300 = fill_array(imgs_6300, tstamps)
-    _, stds_6300 = fill_array(stds_6300, tstamps)
-    _, mds_5577 = fill_array(mds_5577, tstamps)
-    tstamps, mds_6300 = fill_array(mds_6300, tstamps)
+    _, imgs_5577, _ = fill_array(imgs_5577, tstamps) # type: ignore
+    _, stds_5577, _ = fill_array(stds_5577, tstamps) # type: ignore
+    _, imgs_6300, _ = fill_array(imgs_6300, tstamps) # type: ignore
+    _, stds_6300, _ = fill_array(stds_6300, tstamps) # type: ignore
+    _, mds_5577, _ = fill_array(mds_5577, tstamps) # type: ignore
+    tstamps, mds_6300, _ = fill_array(mds_6300, tstamps) # type: ignore
 
     start = tstamps[0].astimezone(pytz.timezone('US/Eastern'))
     start = pd.to_datetime(start).round('1h').to_pydatetime()
@@ -424,27 +301,27 @@ for fidx, (date, ax) in enumerate(zip(dates, axs)):
     def fmt3(x, pos=None):
         return ''
     
-    ax[0].yaxis.set_major_formatter(fmt2)
-    ax[0].locator_params(axis='y', nbins=3)
+    ax[0].yaxis.set_major_formatter(fmt2) # type: ignore
+    ax[0].locator_params(axis='y', nbins=3) # type: ignore
     # ax[0].set_ylabel('Elevation')
-    plt.setp(ax[1].get_yticklabels(), visible=False)
-    ax[1].yaxis.set_ticks_position('none')
+    plt.setp(ax[1].get_yticklabels(), visible=False) # type: ignore
+    ax[1].yaxis.set_ticks_position('none') # type: ignore
     if fidx == 0:
-        [ax[i].set_title(wl) for i, wl in enumerate(
+        [ax[i].set_title(wl) for i, wl in enumerate( # type: ignore
             ('5577 Å (Green)', '6300 Å (Red)'))]
     if fidx != num_rows - 1:
-        ax[0].xaxis.set_ticks_position('none')
-        ax[1].xaxis.set_ticks_position('none')
-        plt.setp(ax[0].get_xticklabels(), visible=False)
-        plt.setp(ax[1].get_xticklabels(), visible=False)
+        ax[0].xaxis.set_ticks_position('none') # type: ignore
+        ax[1].xaxis.set_ticks_position('none') # type: ignore
+        plt.setp(ax[0].get_xticklabels(), visible=False) # type: ignore
+        plt.setp(ax[1].get_xticklabels(), visible=False) # type: ignore
 
-    im = ax[0].contourf(tx, hy, (imgs_5577 - mds_5577) / np.nanmax(stds_5577[za_idx, :]),
+    im = ax[0].contourf(tx, hy, (imgs_5577 - mds_5577) / np.nanmax(stds_5577[za_idx, :]), # type: ignore
                         aspect='auto',
                         cmap='PiYG_r',
                         levels=np.linspace(-4, 4, 17, endpoint=True),
                         extend='both')
 
-    im = ax[1].contourf(tx, hy, (imgs_6300 - mds_6300) / np.nanpercentile(stds_6300[za_idx, :], 99.9),
+    im = ax[1].contourf(tx, hy, (imgs_6300 - mds_6300) / np.nanpercentile(stds_6300[za_idx, :], 99.9), # type: ignore
                         aspect='auto',
                         cmap='PiYG_r',
                         levels=np.linspace(-4, 4, 17, endpoint=True),
@@ -455,17 +332,17 @@ for fidx, (date, ax) in enumerate(zip(dates, axs)):
         tmin = nanloc[0] - 1
         tmax = nanloc[-1] + 1
         trange = np.asarray(ttstamps)[tmin:tmax + 1]
-        for axi in ax:
+        for axi in ax: # type: ignore
             axi.fill_between(trange, height_ang[0] , height_ang[-1], color='k',
                              alpha=0.2, edgecolor=None, hatch='//')
             axi.text(trange.mean(), np.mean(height_ang),
                      'Unavailable', ha='center', va='center', fontsize=6, rotation='vertical', color='r')
     za_idx = 20
-    ax[0].axhline(35, color='k', ls='--', lw=0.5)
-    ax[1].axhline(35, color='k', ls='--', lw=0.5)
+    ax[0].axhline(35, color='k', ls='--', lw=0.5) # type: ignore
+    ax[1].axhline(35, color='k', ls='--', lw=0.5) # type: ignore
     ax_xlim.append((end - start).total_seconds() / 3600)
-    ax[1].text(1.075, 0.5, start.strftime('%Y-%m-%d'),
-               ha='right', va='center', transform=ax[1].transAxes, 
+    ax[1].text(1.075, 0.5, start.strftime('%Y-%m-%d'), # type: ignore
+               ha='right', va='center', transform=ax[1].transAxes, # type: ignore 
                rotation=90, fontsize=8)
 
     # yticks = np.asarray(ax[0].get_yticks())
@@ -475,7 +352,7 @@ for fidx, (date, ax) in enumerate(zip(dates, axs)):
     # plt.show()
 
 for ax in np.asarray(axs).flatten():
-    ax: plt.Axes = ax
+    ax: Axes = ax
     ax.set_xlim(0, max(ax_xlim))
     print(ax.get_ylim())
 
@@ -514,7 +391,7 @@ def fmt2(x, pos=None):
     x = int(x + 18)
     return r'${}^\circ$'.format(x)
 
-fig.colorbar(im, cax=cax, shrink=0.5, format=fmt, extend='both')
+fig.colorbar(im, cax=cax, shrink=0.5, format=fmt, extend='both') # type: ignore
 cax.set_ylabel(r'$\Delta / \sigma$')
 fig.text(0.03, 0.5, 'Elevation', va='center', rotation='vertical')
 

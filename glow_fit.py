@@ -1,6 +1,9 @@
 # %% Imports
 from __future__ import annotations
-from settings import MODEL_DIR, FIT_SAVE_FIGS, FIT_SHOW_FIGS, COUNTS_DIR
+from settings import Directories, is_interactive_session
+
+from pathlib import Path
+import signal
 from collections.abc import Iterable
 import datetime as dt
 from functools import partial
@@ -8,7 +11,7 @@ import gc
 import lzma
 import pickle
 from time import perf_counter_ns
-from typing import Dict, List, SupportsFloat as Numeric, Tuple
+from typing import Dict, List, Optional, SupportsFloat as Numeric, Tuple
 import uncertainties
 import xarray as xr
 import numpy as np
@@ -37,6 +40,10 @@ import matplotlib
 import pandas as pd
 from dateutil.parser import parse
 
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
 usetex = False
 if not usetex:
     # computer modern math text
@@ -48,7 +55,7 @@ rc('font', **{'family': 'serif',
 # rc('font',**{'family':'serif','serif':['Palatino']})
 rc('text', usetex=usetex)
 
-print(f'Model directory: {MODEL_DIR}')
+
 # %%
 
 
@@ -90,6 +97,8 @@ def strfdelta(tdelta, fmt='{D:02}d {H:02}h {M:02}m {S:02}s', inputtype='timedelt
         remainder = int(tdelta)*86400
     elif inputtype in ['w', 'weeks']:
         remainder = int(tdelta)*604800
+    else:
+        remainder = int(tdelta)
 
     f = Formatter()
     desired_fields = [field_tuple[1] for field_tuple in f.parse(fmt)]
@@ -98,12 +107,12 @@ def strfdelta(tdelta, fmt='{D:02}d {H:02}h {M:02}m {S:02}s', inputtype='timedelt
     values = {}
     for field in possible_fields:
         if field in desired_fields and field in constants:
-            values[field], remainder = divmod(remainder, constants[field])
+            values[field], remainder = divmod(remainder, constants[field]) # type: ignore
     return f.format(fmt, **values)
 
 
-def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None):
-    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x)
+def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None): # type: ignore
+    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x) # type: ignore
     y = gaussian_filter1d(y, sigma=sigma)
     if round is not None:
         y = np.round(y, decimals=round)
@@ -123,7 +132,7 @@ def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.
     ap = []
     for td in tdtime_in:
         ip = gi.get_indices(
-            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware)
+            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware) # type: ignore
         f107a.append(ip["f107s"].iloc[1])
         f107.append(ip['f107'].iloc[1])
         f107p.append(ip['f107'].iloc[0])
@@ -141,7 +150,7 @@ def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.
     f107a = do_interp_smoothing(ttidx, pdtime, f107a)  # does not round
     f107p = do_interp_smoothing(ttidx, pdtime, f107p)  # does not round
 
-    return tdtime, ap, f107, f107a, f107p
+    return tdtime, ap, f107, f107a, f107p # type: ignore
 
 
 # %%
@@ -170,7 +179,7 @@ class GLOWMin:
         self._iter = 0
         self._param = None
         self._diff = None
-        self._bright: List[np.ndarray, np.ndarray] = None
+        self._bright: List[np.ndarray] = None # type: ignore
         self._out = []
         self._save = save_walk
         self._pool = mp.Pool(processes=12)
@@ -202,18 +211,18 @@ class GLOWMin:
                                   density_perturbation=(
                                       params[0], params[1], params[2], params[3], params[4], 1, params[5]),
                                   show_progress=False, mpool=self._pool)
-        ec5577 = glow2d.glow2d_polar.get_emission(
+        ec5577 = glow2d.glow2d_polar.get_emission( # type: ignore
             # ascending
-            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1]
+            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1] # type: ignore
         ec6300 = glow2d.glow2d_polar.get_emission(
-            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1]
+            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1] # type: ignore
         # 16 points around the midpoint
         idxs = slice(self._zaidx-8, self._zaidx+8)
         # idxs = [self._zaidx] # single point solver
         br_val = np.nanmean(ec6300[idxs])
         ratio_val = np.nanmean(ec5577[idxs] / br_val)
-        ret = ((((br_val - self._br) / self._br)**2) * 65
-               + 35 * (((ratio_val - self._ratio) / self._ratio)**2)) / 100
+        ret = ((((br_val - self._br) / self._br)**2) * 65 # type: ignore
+               + 35 * (((ratio_val - self._ratio) / self._ratio)**2)) / 100 # type: ignore
         if self._save:
             self._out.append(
                 (params[0], params[1], params[2], params[3], params[4], params[5], ret))
@@ -237,209 +246,251 @@ class GLOWMin:
 dates = ['20220126', '20220209', '20220215', '20220218',
          '20220219', '20220226', '20220303', '20220304']
 za_idx = 20
-for date in dates:
-    time_start = perf_counter_ns()
-    ds = xr.load_dataset(f'{COUNTS_DIR}/hitmis_cts_{date}.nc')
-    tstamps = ds.tstamp.values
-    start = pd.to_datetime(tstamps[0]).to_pydatetime()
-    end = pd.to_datetime(tstamps[-1]).to_pydatetime()
-    start += dt.timedelta(hours=1)
-    end -= dt.timedelta(hours=1)
-    # start = end - dt.timedelta(hours=2)
-    # end = start + dt.timedelta(hours=2)
-    ds = ds.loc[dict(tstamp=slice(start, end))]
-    tstamps = ds.tstamp.values
-    height = sds.height.values
-    dheight = np.mean(np.diff(height))
-    tstamps = list(map(lambda t: pd.to_datetime(
-        t).to_pydatetime().astimezone(pytz.utc), tstamps))
-    ttstamps = list(map(lambda i: (
-        tstamps[i] - tstamps[0]).total_seconds()/3600, range(len(tstamps))))
-    imgs_5577 = (ds['5577'].values.T[::-1, :])[za_idx, :]
-    stds_5577 = (ds['5577_std'].values.T[::-1, :])[za_idx, :]
-    imgs_6300 = (ds['6300'].values.T[::-1, :])[za_idx, :]
-    stds_6300 = (ds['6300_std'].values.T[::-1, :])[za_idx, :]
-    imgs_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
-    stds_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
-    imgs_5577 = gaussian_filter(np.ma.array(
-        imgs_5577, mask=np.isnan(imgs_5577)), sigma=2)*scale_5577[za_idx]
-    stds_5577 = gaussian_filter(np.ma.array(
-        stds_5577, mask=np.isnan(stds_5577)), sigma=2)*scale_5577[za_idx]
-    imgs_6300 = gaussian_filter(np.ma.array(
-        imgs_6300, mask=np.isnan(imgs_6300)), sigma=2)*scale_6300[za_idx]
-    stds_6300 = gaussian_filter(np.ma.array(
-        stds_6300, mask=np.isnan(stds_6300)), sigma=2)*scale_6300[za_idx]
 
-    lat, lon = 42.64981361744372, -71.31681056737486
-    _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps)
-    br6300 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
-    br5577 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
-    fparams = np.zeros((len(ds.tstamp), 6), dtype=float)
-    fit_res = []
-    failed = 0
-    pbar = tqdm(range(len(ds.tstamp.values)))
 
-    if FIT_SHOW_FIGS:
-        fig, ax = plt.subplots(2, 1, figsize=(
-            6, 4.8), sharex=True, tight_layout=True)
-        fig.suptitle('%s - %s (US/East)' %
-                     (start.strftime('%Y-%m-%d %H:%M'), end.strftime('%Y-%m-%d %H:%M')))
-        # cax = make_color_axis(ax)
-        fig.set_dpi(100)
-        matplotlib.rcParams.update({'font.size': 10})
-        matplotlib.rcParams.update({'axes.titlesize': 10})
-        matplotlib.rcParams.update({'axes.labelsize': 10})
-        [ax[i].set_title(wl) for i, wl in enumerate(('5577 Å', '6300 Å'))]
+def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx: int = 20, show_figs: bool = False, save_figs: bool = False):
+    for date in dates:
 
-        line, = ax[0].plot(
-            ttstamps, (imgs_5577), color='g')
-        l_5577, = ax[0].plot([0], [np.nan], color='g', ls='-.')
-        s_5577 = ax[0].scatter([0], [np.nan], marker='x', color='k')
-        line, = ax[1].plot(
-            ttstamps, (imgs_6300), color='r')
-        l_6300, = ax[1].plot([0], [np.nan], color='r', ls='-.')
-        s_6300 = ax[1].scatter([0], [np.nan], marker='x', color='k')
-        ax[0].fill_between(ttstamps, imgs_5577 + stds_5577,
-                           imgs_5577 - stds_5577, alpha=0.5, color='r')
-        ax[1].fill_between(ttstamps, imgs_6300 + stds_6300,
-                           imgs_6300 - stds_6300, alpha=0.5, color='r')
-        ax[1].set_xlim(np.min(ttstamps), np.max(ttstamps))
-        plt.ion()
-        plt.show()
-        fig.canvas.draw_idle()
-        fig.canvas.flush_events()
+        model_file = model_dir / f'keofit_{date}.nc'
+        fit_file = model_dir / f'fitres_{date}.xz'
+        if model_file.exists() and fit_file.exists():
+            print(f'Skipping {date} as model and fit files already exist.')
+            continue
 
-    LOW = 0.1
-    HIGH = 4.0
+        time_start = perf_counter_ns()
+        ds = xr.load_dataset(counts_dir / f'hitmis_cts_{date}.nc')
+        tstamps = ds.tstamp.values
+        start = pd.to_datetime(tstamps[0]).to_pydatetime()
+        end = pd.to_datetime(tstamps[-1]).to_pydatetime()
+        start += dt.timedelta(hours=1)
+        end -= dt.timedelta(hours=1)
+        # start = end - dt.timedelta(hours=2)
+        # end = start + dt.timedelta(hours=2)
+        ds = ds.loc[dict(tstamp=slice(start, end))]
+        tstamps = ds.tstamp.values
+        height = sds.height.values
+        dheight = np.mean(np.diff(height))
+        tstamps = list(map(lambda t: pd.to_datetime(
+            t).to_pydatetime().astimezone(pytz.utc), tstamps))
+        ttstamps = list(map(lambda i: (
+            tstamps[i] - tstamps[0]).total_seconds()/3600, range(len(tstamps))))
+        imgs_5577 = (ds['5577'].values.T[::-1, :])[za_idx, :]
+        stds_5577 = (ds['5577_std'].values.T[::-1, :])[za_idx, :]
+        imgs_6300 = (ds['6300'].values.T[::-1, :])[za_idx, :]
+        stds_6300 = (ds['6300_std'].values.T[::-1, :])[za_idx, :]
+        imgs_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
+        stds_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
+        imgs_5577 = gaussian_filter(np.ma.array(
+            imgs_5577, mask=np.isnan(imgs_5577)), sigma=2)*scale_5577[za_idx]
+        stds_5577 = gaussian_filter(np.ma.array(
+            stds_5577, mask=np.isnan(stds_5577)), sigma=2)*scale_5577[za_idx]
+        imgs_6300 = gaussian_filter(np.ma.array(
+            imgs_6300, mask=np.isnan(imgs_6300)), sigma=2)*scale_6300[za_idx]
+        stds_6300 = gaussian_filter(np.ma.array(
+            stds_6300, mask=np.isnan(stds_6300)), sigma=2)*scale_6300[za_idx]
 
-    x0 = tuple(np.random.uniform(0.5, 2, 6).tolist())  # (1, 1, 1, 1, 1, 1)
-    x_init = np.asarray(x0)
-    with open(os.path.join(MODEL_DIR, 'initprops.txt'), 'a') as initprops:
-        initprops.write(start.strftime('%Y-%m-%d,'))
-        initprops.write(','.join(map(str, x0)))
-        initprops.write('\n')
-    with open(os.path.join(MODEL_DIR, f'fitlog_{date}.txt'), 'w') as fitlog:
-        for idx in pbar:
-            if idx == (len(ds.tstamp.values) // 2):
-                save = True
-            else:
-                save = False
-            # do fit
-            try:
-                bgt = imgs_6300[idx]
-                rat = (imgs_5577[idx] / imgs_6300[idx])
-                if np.isnan(bgt) or np.isnan(rat):
-                    raise ValueError('bgt/rat NaN')
-                b63 = uncertainties.ufloat(imgs_6300[idx], stds_6300[idx])
-                b57 = uncertainties.ufloat(imgs_5577[idx], stds_5577[idx])
-                brat: uncertainties.UFloat = b57 / b63
-                rat = brat.nominal_value
-                d_rat = brat.std_dev
-                geomag_params = (f107a[idx], f107[idx], f107p[idx], ap[idx])
-                minf = GLOWMin(tstamps[idx], lat, lon, 40, geomag_params=geomag_params, za_min=za_min,
-                               za_max=za_max, za_idx=za_idx, br=bgt, ratio=rat, d_br=b63.std_dev, d_rat=d_rat, save_walk=save)
-                res: OptimizeResult = \
-                    least_squares(minf.update, x0=x0,
-                                  bounds=((LOW, LOW, LOW, LOW, LOW, LOW),
-                                          (HIGH, HIGH, HIGH, HIGH, HIGH, HIGH)),
-                                  diff_step=0.05, xtol=1e-10, ftol=1e-3, max_nfev=3000)
-                if save:
-                    out = minf.walk
+        lat, lon = 42.64981361744372, -71.31681056737486
+        _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps)  # type: ignore
+        br6300 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
+        br5577 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
+        fparams = np.zeros((len(ds.tstamp), 6), dtype=float)
+        fit_res = []
+        failed = 0
+        pbar = tqdm(range(len(ds.tstamp.values)), dynamic_ncols=True)
 
-                fit_res.append((ds.tstamp.values[idx], res))
-                x0 = (res.x[0], res.x[1], res.x[2],
-                      res.x[3], res.x[4], res.x[5])
-                fp = minf.fit_params
-                perf = list(minf.fit_perf)
-                br_diff = ((perf[0] - perf[1]) / perf[1])*100
-                br_diff_str = '%+.2f' % (br_diff)
-                pbar.set_description(
-                    f'[{fp[0]:.2f} {fp[1]:.2f} {fp[2]:.2f} {fp[3]:.2f} {fp[4]:.2f} {fp[5]:.2f}] ({perf[1]:.2e}){br_diff_str}% | {perf[2]:.2f}<->{perf[3]:.2f} ({failed}) ', refresh=True)
-                out = minf.emission
-                br5577[idx, :] += out[0]
-                br6300[idx, :] += out[1]
-                fparams[idx, :] += fp
-            except Exception as e:
-                fit_res.append((ds.tstamp.values[idx], None))
-                br5577[idx, :] += np.nan
-                br6300[idx, :] += np.nan
-                fparams[idx, :] += np.nan
-                failed += 1
-                fitlog.write(
-                    f'{ds.tstamp.values[idx]}, {idx}, {str(e)}\n')
-                pbar.set_description(f'Failed {idx + 1}: {e}', refresh=True)
+        if show_figs:
+            fig, ax = plt.subplots(2, 1, figsize=(
+                6, 4.8), sharex=True, tight_layout=True)
+            fig.suptitle('%s - %s (US/East)' %
+                         (start.strftime('%Y-%m-%d %H:%M'), end.strftime('%Y-%m-%d %H:%M')))
+            # cax = make_color_axis(ax)
+            fig.set_dpi(100)
+            matplotlib.rcParams.update({'font.size': 10})
+            matplotlib.rcParams.update({'axes.titlesize': 10})
+            matplotlib.rcParams.update({'axes.labelsize': 10})
+            [ax[i].set_title(wl) for i, wl in enumerate(('5577 Å', '6300 Å'))]
 
-            if FIT_SHOW_FIGS:
-                l_5577.set_data(ttstamps[:idx+1],
-                                br5577.T[::-1, :idx+1][za_idx, :])
-                s_5577.set_offsets(
-                    [ttstamps[idx], br5577.T[::-1, :][za_idx, idx]])
+            line, = ax[0].plot(
+                ttstamps, (imgs_5577), color='g')
+            l_5577, = ax[0].plot([0], [np.nan], color='g', ls='-.')
+            s_5577 = ax[0].scatter([0], [np.nan], marker='x', color='k')
+            line, = ax[1].plot(
+                ttstamps, (imgs_6300), color='r')
+            l_6300, = ax[1].plot([0], [np.nan], color='r', ls='-.')
+            s_6300 = ax[1].scatter([0], [np.nan], marker='x', color='k')
+            ax[0].fill_between(ttstamps, imgs_5577 + stds_5577,
+                               imgs_5577 - stds_5577, alpha=0.5, color='r')
+            ax[1].fill_between(ttstamps, imgs_6300 + stds_6300,
+                               imgs_6300 - stds_6300, alpha=0.5, color='r')
+            ax[1].set_xlim(np.min(ttstamps), np.max(ttstamps))
+            plt.ion()
+            plt.show()
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
 
-                ax[0].set_ylim(min(np.ma.array(br5577[:idx+1, za_idx], mask=np.isnan(br5577[:idx+1, za_idx])).min(), np.ma.array((imgs_5577 - 2*stds_5577), mask=np.isnan((imgs_5577 - 2*stds_5577))).min()),
-                               max(np.ma.array(br5577[:idx+1, za_idx], mask=np.isnan(br5577[:idx+1, za_idx])).max(), np.ma.array((imgs_5577 + 2*stds_5577), mask=np.isnan((imgs_5577 + 2*stds_5577))).max()))
+        LOW = 0.1
+        HIGH = 4.0
 
-                l_6300.set_data(ttstamps[:idx+1],
-                                br6300.T[::-1, :idx+1][za_idx, :])
-                s_6300.set_offsets(
-                    [ttstamps[idx], br6300.T[::-1, :][za_idx, idx]])
+        x0 = tuple(np.random.uniform(0.5, 2, 6).tolist())  # (1, 1, 1, 1, 1, 1)
+        x_init = np.asarray(x0)
+        with open(model_dir / 'initprops.txt', 'a') as initprops:
+            initprops.write(start.strftime('%Y-%m-%d,'))
+            initprops.write(','.join(map(str, x0)))
+            initprops.write('\n')
+        with open(model_dir / f'fitlog_{date}.txt', 'w') as fitlog:
+            for idx in pbar:
+                if idx == (len(ds.tstamp.values) // 2):
+                    save = True
+                else:
+                    save = False
+                # do fit
+                try:
+                    bgt = imgs_6300[idx]
+                    rat = (imgs_5577[idx] / imgs_6300[idx])
+                    if np.isnan(bgt) or np.isnan(rat):
+                        raise ValueError('bgt/rat NaN')
+                    b63 = uncertainties.ufloat(imgs_6300[idx], stds_6300[idx])
+                    b57 = uncertainties.ufloat(imgs_5577[idx], stds_5577[idx])
+                    brat: uncertainties.UFloat = b57 / b63  # type: ignore
+                    rat = brat.nominal_value
+                    d_rat = brat.std_dev
+                    geomag_params = (
+                        f107a[idx], f107[idx], f107p[idx], ap[idx])
+                    minf = GLOWMin(tstamps[idx], lat, lon, 40, geomag_params=geomag_params, za_min=za_min,  # type: ignore
+                                   za_max=za_max, za_idx=za_idx, br=bgt, ratio=rat, d_br=b63.std_dev, d_rat=d_rat, save_walk=save)
+                    res: OptimizeResult = \
+                        least_squares(minf.update, x0=x0,
+                                      bounds=((LOW, LOW, LOW, LOW, LOW, LOW),
+                                              (HIGH, HIGH, HIGH, HIGH, HIGH, HIGH)),
+                                      diff_step=0.05, xtol=1e-10, ftol=1e-3, max_nfev=3000)
+                    if save:
+                        out = minf.walk
 
-                ax[1].set_ylim(min(np.ma.array(br6300[:idx+1, za_idx], mask=np.isnan(br6300[:idx+1, za_idx])).min(), np.ma.array((imgs_6300 - 2*stds_6300), mask=np.isnan((imgs_6300 - 2*stds_6300))).min()),
-                               max(np.ma.array(br6300[:idx+1, za_idx], mask=np.isnan(br6300[:idx+1, za_idx])).max(), np.ma.array((imgs_6300 + 2*stds_6300), mask=np.isnan((imgs_6300 + 2*stds_6300))).max()))
+                    fit_res.append((ds.tstamp.values[idx], res))
+                    x0 = (res.x[0], res.x[1], res.x[2],
+                          res.x[3], res.x[4], res.x[5])
+                    fp = minf.fit_params
+                    perf = list(minf.fit_perf)  # type: ignore
+                    br_diff = ((perf[0] - perf[1]) / perf[1]) * 100  # type: ignore
+                    br_diff_str = '%+.2f' % (br_diff)
+                    pbar.set_description(
+                        f'[{fp[0]:.2f} {fp[1]:.2f} {fp[2]:.2f} {fp[3]:.2f} {fp[4]:.2f} {fp[5]:.2f}] ({perf[1]:.2e}){br_diff_str}% | {perf[2]:.2f}<->{perf[3]:.2f} ({failed}) ', refresh=True) # type: ignore
+                    out = minf.emission
+                    br5577[idx, :] += out[0]
+                    br6300[idx, :] += out[1]
+                    fparams[idx, :] += fp
+                except Exception as e:
+                    fit_res.append((ds.tstamp.values[idx], None))
+                    br5577[idx, :] += np.nan
+                    br6300[idx, :] += np.nan
+                    fparams[idx, :] += np.nan
+                    failed += 1
+                    fitlog.write(
+                        f'{ds.tstamp.values[idx]}, {idx}, {str(e)}\n')
+                    pbar.set_description(
+                        f'Failed {idx + 1}: {e}', refresh=True)
 
-                fig.canvas.draw_idle()
-                fig.canvas.flush_events()
-    time_end = perf_counter_ns()
-    tdelta = dt.timedelta(seconds=(time_end - time_start)*1e-9)
-    print(f'[{start.strftime("%Y-%m-%d")}]: Processing time: {strfdelta(tdelta)}, total: {len(ds.tstamp.values)}, failed: {failed}')
-    if failed == 0:
-        os.remove(os.path.join(MODEL_DIR, f'fitlog_{date}.txt'))
-    time_start = perf_counter_ns()
-    kds = xr.Dataset(
-        data_vars={'5577': (('tstamp', 'height'), br5577),
-                   '6300': (('tstamp', 'height'), br6300),
-                   'ap': (('tstamp'), ap),
-                   'f107a': (('tstamp'), f107a),
-                   'f107': (('tstamp'), f107),
-                   'f107p': (('tstamp'), f107p),
-                   'init_params': (('elems'), x_init),
-                   'density_perturbation': (('tstamp', 'elems'), fparams),
-                   'lat': (('tstamp'), [lat]*len(tstamps)),
-                   'lon': (('tstamp'), [lon]*len(tstamps)),
-                   'to_r': 1/(dheight * 4*np.pi*1e-6)},
-        coords={'tstamp': ds.tstamp.values, 'height': sds.height.values,
-                'elems': ['O', 'O2', 'N2', 'N4S', 'N2D', 'e']}
+                if show_figs:
+                    l_5577.set_data(ttstamps[:idx+1],  # type: ignore
+                                    br5577.T[::-1, :idx+1][za_idx, :])
+                    s_5577.set_offsets(  # type: ignore
+                        [ttstamps[idx], br5577.T[::-1, :][za_idx, idx]])
+
+                    ax[0].set_ylim(min(np.ma.array(br5577[:idx+1, za_idx], mask=np.isnan(br5577[:idx+1, za_idx])).min(), np.ma.array((imgs_5577 - 2*stds_5577), mask=np.isnan((imgs_5577 - 2*stds_5577))).min()), # type: ignore
+                                   max(np.ma.array(br5577[:idx+1, za_idx], mask=np.isnan(br5577[:idx+1, za_idx])).max(), np.ma.array((imgs_5577 + 2*stds_5577), mask=np.isnan((imgs_5577 + 2*stds_5577))).max()))
+
+                    l_6300.set_data(ttstamps[:idx+1],  # type: ignore
+                                    br6300.T[::-1, :idx+1][za_idx, :])
+                    s_6300.set_offsets(  # type: ignore
+                        [ttstamps[idx], br6300.T[::-1, :][za_idx, idx]])
+
+                    ax[1].set_ylim(min(np.ma.array(br6300[:idx+1, za_idx], mask=np.isnan(br6300[:idx+1, za_idx])).min(), np.ma.array((imgs_6300 - 2*stds_6300), mask=np.isnan((imgs_6300 - 2*stds_6300))).min()), # type: ignore
+                                   max(np.ma.array(br6300[:idx+1, za_idx], mask=np.isnan(br6300[:idx+1, za_idx])).max(), np.ma.array((imgs_6300 + 2*stds_6300), mask=np.isnan((imgs_6300 + 2*stds_6300))).max()))
+
+                    fig.canvas.draw_idle()  # type: ignore
+                    fig.canvas.flush_events()  # type: ignore
+        time_end = perf_counter_ns()
+        tdelta = dt.timedelta(seconds=(time_end - time_start)*1e-9)
+        print(f'[{start.strftime("%Y-%m-%d")}]: Processing time: {strfdelta(tdelta)}, total: {len(ds.tstamp.values)}, failed: {failed}')
+        if failed == 0:
+            os.remove(model_dir / f'fitlog_{date}.txt')
+        time_start = perf_counter_ns()
+        kds = xr.Dataset(
+            data_vars={'5577': (('tstamp', 'height'), br5577),
+                       '6300': (('tstamp', 'height'), br6300),
+                       'ap': (('tstamp'), ap),
+                       'f107a': (('tstamp'), f107a),
+                       'f107': (('tstamp'), f107),
+                       'f107p': (('tstamp'), f107p),
+                       'init_params': (('elems'), x_init),
+                       'density_perturbation': (('tstamp', 'elems'), fparams),
+                       'lat': (('tstamp'), [lat]*len(tstamps)),
+                       'lon': (('tstamp'), [lon]*len(tstamps)),
+                       'to_r': 1/(dheight * 4*np.pi*1e-6)},
+            coords={'tstamp': ds.tstamp.values, 'height': sds.height.values,
+                    'elems': ['O', 'O2', 'N2', 'N4S', 'N2D', 'e']}
+        )
+        unit_desc = {
+            '5577': ('cm^{-2} s^{-1} rad^{-1}', '5577 Brightness'),
+            '6300': ('cm^{-2} s^{-1} rad^{-1}', '6300 Brightness'),
+            'ap': ('', 'Planetary ap index (3 hour UTC)'),
+            'f107a': ('sfu', '81-day rolling average of F10.7 solar flux'),
+            'f107': ('sfu', 'F10.7 solar flux on present day'),
+            'f107p': ('sfu', 'F10.7 solar flux on previous day'),
+            'density_perturbation': ('', 'Relative density perturbation'),
+            'lat': ('deg', 'Latitude'),
+            'lon': ('deg', 'Longitude'),
+            'to_r': ('R rad^{-1}', 'Convert brightness to Rayleigh')
+        }
+        _ = list(map(lambda x: kds[x].attrs.update(
+            {'units': unit_desc[x][0], 'description': unit_desc[x][1]}), unit_desc.keys()))
+        kds.to_netcdf(model_file)
+
+        with lzma.open(fit_file, 'wb') as fstr:
+            pickle.dump(fit_res, fstr)
+
+        time_end = perf_counter_ns()
+        tdelta = dt.timedelta(seconds=(time_end - time_start)*1e-9)
+        print(f'[{start.strftime("%Y-%m-%d")}]: Saved in {strfdelta(tdelta)}')
+
+        mod_5577 = kds['5577'].values.T[::-1, :]
+        mod_6300 = kds['6300'].values.T[::-1, :]
+
+        if show_figs:
+            if save_figs:
+                fig.savefig(model_dir / f'fit_{date}.png')  # type: ignore
+
+            plt.close(fig=fig)  # type: ignore
+            plt.ioff()
+
+
+# %% Run code
+if not is_interactive_session():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='Run GLOW model fitting for Keo data.')
+    parser.add_argument('suffix', type=str, default=None, nargs='?',
+                        help='Suffix of directory.')
+    parser.add_argument('--dates', type=str, nargs='+', default=dates,
+                        help='List of dates to process (YYYYMMDD format).')
+    parser.add_argument('--za_idx', type=int, default=za_idx,
+                        help='Zenith angle index to use for fitting (default: 20).')
+    parser.add_argument('--show_figs', action='store_true',
+                        help='Show fit figures during processing.')
+    parser.add_argument('--save_figs', action='store_true',
+                        help='Save fit figures to disk.')
+    args = parser.parse_args()
+    if args.suffix is not None and not args.suffix.strip() == '':
+        args.suffix = None
+    settings = Directories(suffix=args.suffix)
+    save_figs = args.save_figs
+    show_figs = args.show_figs
+    print(f'Model directory: {settings.model_dir}')
+    run_glow_fit(
+        counts_dir=settings.counts_dir,
+        model_dir=settings.model_dir,
+        dates=args.dates,
+        za_idx=args.za_idx,
+        show_figs=args.show_figs,
+        save_figs=args.save_figs
     )
-    unit_desc = {
-        '5577': ('cm^{-2} s^{-1} rad^{-1}', '5577 Brightness'),
-        '6300': ('cm^{-2} s^{-1} rad^{-1}', '6300 Brightness'),
-        'ap': ('', 'Planetary ap index (3 hour UTC)'),
-        'f107a': ('sfu', '81-day rolling average of F10.7 solar flux'),
-        'f107': ('sfu', 'F10.7 solar flux on present day'),
-        'f107p': ('sfu', 'F10.7 solar flux on previous day'),
-        'density_perturbation': ('', 'Relative density perturbation'),
-        'lat': ('deg', 'Latitude'),
-        'lon': ('deg', 'Longitude'),
-        'to_r': ('R rad^{-1}', 'Convert brightness to Rayleigh')
-    }
-    _ = list(map(lambda x: kds[x].attrs.update(
-        {'units': unit_desc[x][0], 'description': unit_desc[x][1]}), unit_desc.keys()))
-    kds.to_netcdf(f'{MODEL_DIR}/keofit_{date}.nc')
-
-    with lzma.open(f'{MODEL_DIR}/fitres_{date}.xz', 'wb') as fstr:
-        pickle.dump(fit_res, fstr)
-
-    time_end = perf_counter_ns()
-    tdelta = dt.timedelta(seconds=(time_end - time_start)*1e-9)
-    print(f'[{start.strftime("%Y-%m-%d")}]: Saved in {strfdelta(tdelta)}')
-
-    mod_5577 = kds['5577'].values.T[::-1, :]
-    mod_6300 = kds['6300'].values.T[::-1, :]
-
-    if FIT_SHOW_FIGS:
-        if FIT_SAVE_FIGS:
-            fig.savefig(f'{MODEL_DIR}/fit_{date}.png')
-
-        plt.close(fig=fig)
-        plt.ioff()
-
-# %%

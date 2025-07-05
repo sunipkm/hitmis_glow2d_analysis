@@ -15,6 +15,7 @@
 !keomodel/*.nc
 !keomodel/*.xz
 keomodel/*.png
+fitprops*
 # Ignore result directories with suffixes
 fitprops_*
 fitpropsvert_*
