@@ -1,13 +1,13 @@
 # %% Imports
 from __future__ import annotations
-from common_funcs import get_date
+from common_funcs import LINESTYLE_DICT, get_date, fill_array
 from settings import Directories, is_interactive_session
 import datetime as dt
 from io import TextIOWrapper
 import lzma
 from pathlib import Path
 import pickle
-from typing import List, SupportsFloat as Numeric, Tuple
+from typing import List, Optional, SupportsFloat as Numeric, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 import pytz
@@ -19,36 +19,14 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def fmt_time(x: Numeric, ofst: dt.datetime) -> str:
-    x = dt.timedelta(hours=x) # type: ignore
-    res = ofst + x # type: ignore
+    x = dt.timedelta(hours=x)  # type: ignore
+    res = ofst + x  # type: ignore
     return res.strftime('%H:%M')
-# %% Line styles
-linestyle_str = [
-    ('solid', 'solid'),      # Same as (0, ()) or '-'
-    ('dotted', 'dotted'),    # Same as (0, (1, 1)) or ':'
-    ('dashed', 'dashed'),    # Same as '--'
-    ('dashdot', 'dashdot')]  # Same as '-.'
 
-linestyle_dict = {
-    'loosely dotted':      (0, (1, 10)),
-    'dotted':              (0, (1, 1)),
-    'densely dotted':      (0, (1, 1)),
-    'long dash with offset': (5, (10, 3)),
-    'loosely dashed':      (0, (5, 10)),
-    'dashed':              (0, (5, 5)),
-    'densely dashed':      (0, (5, 1)),
-    'dashdot':             (0, (3, 5, 1, 5)),
-    'loosely dashdotted':  (0, (3, 10, 1, 10)),
-    'dashdotted':          (0, (3, 5, 1, 5)),
-    'densely dashdotted':  (0, (3, 1, 1, 1)),
-    'dashdotdotted':       (0, (3, 5, 1, 5, 1, 5)),
-    'loosely dashdotdotted': (0, (3, 10, 1, 10, 1, 10)),
-    'densely dashdotdotted': (0, (3, 1, 1, 1, 1, 1))
-}
 # %% For each day
 
 
-def generate_vert(output: Path, date: str, file: Path, ofile: TextIOWrapper, tfile: TextIOWrapper, keys: List[str], save_figs: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[TextIOWrapper, TextIOWrapper]], keys: List[str], save_figs: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     with lzma.open(file, 'rb') as f:
         fitres = pickle.load(f)
     tstamps = [x[0] for x in fitres]
@@ -94,27 +72,27 @@ def generate_vert(output: Path, date: str, file: Path, ofile: TextIOWrapper, tfi
         den_n4s), np.nanmin(den_n4s), np.nanmax(den_n4s))
     stats['e-'] = (np.nanmean(den_e), np.nanstd(den_e),
                    np.nanmedian(den_e), np.nanmin(den_e), np.nanmax(den_e))
-    _, den_o = fill_array(den_o, tstamps) # type: ignore
-    _, den_o2 = fill_array(den_o2, tstamps) # type: ignore
-    _, den_n2 = fill_array(den_n2, tstamps) # type: ignore
-    _, den_no = fill_array(den_no, tstamps) # type: ignore
-    _, den_n4s = fill_array(den_n4s, tstamps) # type: ignore
-    tstamps, den_e = fill_array(den_e, tstamps) # type: ignore
+    _, den_o, _ = fill_array(den_o, tstamps)  # type: ignore
+    _, den_o2, _ = fill_array(den_o2, tstamps)  # type: ignore
+    _, den_n2, _ = fill_array(den_n2, tstamps)  # type: ignore
+    _, den_no, _ = fill_array(den_no, tstamps)  # type: ignore
+    _, den_n4s, _ = fill_array(den_n4s, tstamps)  # type: ignore
+    tstamps, den_e, _ = fill_array(den_e, tstamps)  # type: ignore
     tstamps = np.asarray(tstamps, dtype=float)
     tstamps /= 3600  # convert to hours
     fig = plt.figure(figsize=(4.8, 3), dpi=300)
     ax = fig.add_subplot(111)
     ax.plot(tstamps, den_o,
             label='O', color='blue',
-            linewidth=0.75, linestyle=linestyle_dict['dotted'])
+            linewidth=0.75, linestyle=LINESTYLE_DICT['dotted'])
     ax.plot(tstamps, den_o2, label='O$_2$', color='red',
-            linewidth=0.75, linestyle=linestyle_dict['loosely dashed'])
+            linewidth=0.75, linestyle=LINESTYLE_DICT['loosely dashed'])
     ax.plot(tstamps, den_n2, label='N$_2$', color='green',
-            linewidth=0.75, linestyle=linestyle_dict['dashdot'])
+            linewidth=0.75, linestyle=LINESTYLE_DICT['dashdot'])
     ax.plot(tstamps, den_no, label='NO', color='purple',
-            linewidth=0.75, linestyle=linestyle_dict['densely dashdotted'])
+            linewidth=0.75, linestyle=LINESTYLE_DICT['densely dashdotted'])
     ax.plot(tstamps, den_n4s, label='N$(^4S)$', color='orange',
-            linestyle=linestyle_dict['dashdotdotted'], linewidth=0.75)
+            linestyle=LINESTYLE_DICT['dashdotdotted'], linewidth=0.75)
     ax.plot(tstamps, den_e, label='e$^-$', color='black',
             linewidth=0.75)
     ax.set_xlabel('Local Time (Hours)')
@@ -134,15 +112,18 @@ def generate_vert(output: Path, date: str, file: Path, ofile: TextIOWrapper, tfi
         plt.show()
     plt.close(fig)
 
-    ofile.write('\n')
-    ofile.write(f'{sstart:%Y-%m-%d},\t')
-    tfile.write(f'{sstart:%Y-%m-%d} ')
-    for key in keys:
-        vals = stats[key]
-        ofile.write(
-            f'{vals[0]:.3f}+/-{vals[1]:.3f},\t{vals[3]:.3f},\t{vals[4]:.3f},\t')
-        tfile.write(f'& ${vals[0]:.2f}^{{{vals[4]:.2f}}}_{{{vals[3]:.2f}}}$ ')
-    tfile.write(r'\\' + '\n')
+    if fhandles is not None:
+        ofile, tfile = fhandles
+        ofile.write('\n')
+        ofile.write(f'{sstart:%Y-%m-%d},\t')
+        tfile.write(f'{sstart:%Y-%m-%d} ')
+        for key in keys:
+            vals = stats[key]
+            ofile.write(
+                f'{vals[0]:.3f}+/-{vals[1]:.3f},\t{vals[3]:.3f},\t{vals[4]:.3f},\t')
+            tfile.write(
+                f'& ${vals[0]:.2f}^{{{vals[4]:.2f}}}_{{{vals[3]:.2f}}}$ ')
+        tfile.write(r'\\' + '\n')
     return tstamps, den_part
 
 # %% Runner
@@ -168,8 +149,14 @@ def runner(settings: Directories, save_figs: bool = True):
     """
         )
         for date, file in zip(dates, files):
-            generate_vert(vertprops_dir, date, file, ofile,
-                          tfile, keys, save_figs=save_figs)
+            generate_vert(
+                vertprops_dir,
+                date,
+                file,
+                (ofile, tfile),
+                keys,
+                save_figs=save_figs
+            )
         tfile.write(r"""
     \hline
 \end{tabular}

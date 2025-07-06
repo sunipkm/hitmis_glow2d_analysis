@@ -13,7 +13,7 @@ import geomagdata as gi
 from pathlib import Path
 from skmpython import staticvars
 import xarray as xr
-from typing import List, Tuple, Iterable, SupportsFloat as Numeric
+from typing import List, Optional, Tuple, Iterable, SupportsFloat as Numeric
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 # %% MPL settings
 
@@ -123,6 +123,41 @@ def fill_array(arr: np.ndarray, tstamps: List[dt.datetime], axis: int = 1) -> Tu
                 out[:, start:] = arr[:, dstart:]
     return (tstamps, out, True)
 # %%
+# %%
+def fill_array_1d(arr: np.ndarray, tstamps: List[dt.datetime]) -> Tuple[List[dt.datetime], np.ndarray, Optional[np.ndarray]]:
+    if arr.ndim != 1:
+        raise ValueError('Array must be 1 dim')
+    ts = np.asarray(list(map(lambda t: t.timestamp(), tstamps)), dtype=float)
+    dts = np.diff(ts)
+    t_delta = dts.min()
+    gaps = dts[np.where(dts > t_delta)[0]]
+    gaps = np.asarray(gaps // t_delta, dtype=int)
+    dts = np.diff(dts)
+    oidx = np.where(dts < 0)[0]
+    if len(oidx) == 0:
+        return tstamps, arr, None
+    tstamps = []
+    tlen = int((ts[-1] - ts[0]) // t_delta) + 1
+    for idx in range(tlen):
+        tstamps.append(dt.datetime.fromtimestamp(
+            ts[0] + t_delta*idx).astimezone(pytz.utc))
+    out = np.full((tlen), dtype=arr.dtype, fill_value=np.nan)
+    start = 0
+    dstart = 0
+    nanlocs = []
+    for idx, oi in enumerate(oidx):
+        out[start:oi+1] = arr[dstart:oi+1]
+        
+        start = oi + gaps[idx]
+        nanlocs.append(oi)
+        dstart = oi + 1
+        if idx == len(oidx) - 1:  # end
+            out[start:] = arr[dstart:]
+            nanlocs.append(oi + gaps[idx])
+    nanlocs = None if len(nanlocs) == 0 else np.asarray(nanlocs, dtype=int)
+    return (tstamps, out, nanlocs)
+
+# %%
 
 
 def make_color_axis(ax: Axes | Iterable, position: str = 'right', size: str = '1.5%', pad: float = 0.05) -> Axes | list:
@@ -196,3 +231,27 @@ def get_tec(iono: xr.Dataset) -> np.ndarray:
         tec[idx] += 2*trapz(ne[idx, :], alt)
     tec *= 1e9  # convert to m^-2
     return tec
+
+# %% Line styles
+LINESTYLE_STR = [
+    ('solid', 'solid'),      # Same as (0, ()) or '-'
+    ('dotted', 'dotted'),    # Same as (0, (1, 1)) or ':'
+    ('dashed', 'dashed'),    # Same as '--'
+    ('dashdot', 'dashdot')]  # Same as '-.'
+
+LINESTYLE_DICT = {
+    'loosely dotted':      (0, (1, 10)),
+    'dotted':              (0, (1, 1)),
+    'densely dotted':      (0, (1, 1)),
+    'long dash with offset': (5, (10, 3)),
+    'loosely dashed':      (0, (5, 10)),
+    'dashed':              (0, (5, 5)),
+    'densely dashed':      (0, (5, 1)),
+    'dashdot':             (0, (3, 5, 1, 5)),
+    'loosely dashdotted':  (0, (3, 10, 1, 10)),
+    'dashdotted':          (0, (3, 5, 1, 5)),
+    'densely dashdotted':  (0, (3, 1, 1, 1)),
+    'dashdotdotted':       (0, (3, 5, 1, 5, 1, 5)),
+    'loosely dashdotdotted': (0, (3, 10, 1, 10, 1, 10)),
+    'densely dashdotdotted': (0, (3, 1, 1, 1, 1, 1))
+}

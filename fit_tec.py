@@ -205,11 +205,6 @@ if not is_interactive_session():
     fig.subplots_adjust(hspace=0, wspace=0.1)
     # fig.suptitle('Keogram Elevation: %.0f$^\circ$' % (np.rad2deg(height[za_idx]) + 18))
 
-    ax_xlim = []
-    data_min = []
-    data_max = []
-    datagaps: dict[int, tuple[Numeric]] = {}
-
     matplotlib.rcParams.update({'font.size': 10})
     matplotlib.rcParams.update({'axes.titlesize': 10})
     matplotlib.rcParams.update({'axes.labelsize': 10})
