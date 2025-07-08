@@ -160,7 +160,10 @@ scale_6300 = sds['6300'].values[::-1]
 za_min = sds['za_min'].values
 za_max = sds['za_max'].values
 # %%
-
+def pool_init():
+    """Initialize the multiprocessing pool to ignore SIGINT signals.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 class GLOWMin:
     def __init__(self, time: dt.datetime, lat: Numeric, lon: Numeric, heading: Numeric, geomag_params: Dict[str, Numeric], za_min: np.ndarray, za_max: np.ndarray, za_idx: int, br: Numeric, ratio: Numeric, d_br: Numeric, d_rat: Numeric, save_walk: bool):
@@ -182,7 +185,7 @@ class GLOWMin:
         self._bright: List[np.ndarray] = None # type: ignore
         self._out = []
         self._save = save_walk
-        self._pool = mp.Pool(processes=12)
+        self._pool = mp.Pool(processes=4, initializer=pool_init)
         self._start = perf_counter_ns()
 
     @property
@@ -206,11 +209,17 @@ class GLOWMin:
         if len(params) == 1:
             params = params[0]
         self._param = params
-        iono = glow2d.polar_model(self._time, self._lat, self._lon, self._heading, n_pts=20,
+        try:
+            iono = glow2d.polar_model(self._time, self._lat, self._lon, self._heading, n_pts=20,
                                   geomag_params=self._geopar, Q=None, Echar=None,
                                   density_perturbation=(
                                       params[0], params[1], params[2], params[3], params[4], 1, params[5]),
                                   show_progress=False, mpool=self._pool)
+        except KeyboardInterrupt:
+            self._pool.terminate()
+            self._pool.join()
+            exit(1)
+
         ec5577 = glow2d.glow2d_polar.get_emission( # type: ignore
             # ascending
             iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1] # type: ignore
@@ -469,7 +478,7 @@ if not is_interactive_session():
     import argparse
     parser = argparse.ArgumentParser(
         description='Run GLOW model fitting for Keo data.')
-    parser.add_argument('suffix', type=str, default=None, nargs='?',
+    parser.add_argument('suffix', type=str, default=None, nargs='*',
                         help='Suffix of directory.')
     parser.add_argument('--dates', type=str, nargs='+', default=dates,
                         help='List of dates to process (YYYYMMDD format).')
@@ -480,13 +489,16 @@ if not is_interactive_session():
     parser.add_argument('--save_figs', action='store_true',
                         help='Save fit figures to disk.')
     args = parser.parse_args()
-    if args.suffix is not None and not args.suffix.strip() == '':
-        args.suffix = None
-    settings = Directories(suffix=args.suffix)
-    save_figs = args.save_figs
-    show_figs = args.show_figs
-    print(f'Model directory: {settings.model_dir}')
-    run_glow_fit(
+    suffixes = list(map(lambda x: x.strip(), args.suffix))
+    suffixes = list(filter(lambda x: len(x) > 0, suffixes))
+    if len(suffixes) == 0:
+        suffixes = [None]
+    for suffix in suffixes:
+        settings = Directories(suffix=suffix)
+        save_figs = args.save_figs
+        show_figs = args.show_figs
+        print(f'Model directory: {settings.model_dir}')
+        run_glow_fit(
         counts_dir=settings.counts_dir,
         model_dir=settings.model_dir,
         dates=args.dates,

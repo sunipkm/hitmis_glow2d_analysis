@@ -18,6 +18,9 @@ import tqdm
 import xarray
 from common_funcs import LINESTYLE_DICT, fill_array_1d, get_date
 from settings import ROOT_DIR, Directories
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 # %%
 
 
@@ -33,8 +36,11 @@ def init(run=False) -> List[str]:
         dirname = ROOT_DIR / f'keomodel_{suffix}'
         if dirname.exists():
             if run:
+                print(f'Running fit_den for {suffix}')
                 os.system(f'python fit_den.py {suffix}')
+                print(f'Running fit_loc for {suffix}')
                 os.system(f'python fit_loc.py {suffix}')
+                print(f'Running fit_tec for {suffix}')
                 os.system(f'python fit_tec.py {suffix}')
             valid_suffixes.append(suffix)
     return valid_suffixes
@@ -83,23 +89,44 @@ def compile_tec_corr(suffixes: List[str]) -> None:
                 gps_corrs[line[0]].append(float(line[2]))
     if keys is not None:
         for key in keys:
-            digi_gmean[key] = scipy.stats.mstats.gmean(digi_corrs[key])
-            gps_gmean[key] = scipy.stats.mstats.gmean(gps_corrs[key])
+            digi_gmean[key] = np.nanmean(digi_corrs[key]) # scipy.stats.mstats.gmean(digi_corrs[key])
+            gps_gmean[key] = np.nanmean(gps_corrs[key]) # scipy.stats.mstats.gmean(gps_corrs[key])
 
-    header = ['Date', 'Baseline'] + \
-        [f'Run {i}' for i in range(1, len(suffixes) + 1)] + ['Geomean']
+    header = ['Date', 'B'] + \
+        [f'R{i}' for i in range(1, len(suffixes) + 1)] + ['Mean']
     with open('tec_correlation_digi.csv', 'w') as f:
-        f.write(','.join(header) + '\n')
+        f.write(','.join(header))
         for key in keys:
             line = [key, digi_base[key]] + [digi_corrs[key][i]
                                             for i in range(len(suffixes))] + [f'{digi_gmean[key]:.2f}']
-            f.write(','.join(map(str, line)) + '\n')
+            f.write('\n' + ','.join(map(str, line)))
     with open('tec_correlation_gps.csv', 'w') as f:
-        f.write(','.join(header) + '\n')
+        f.write(','.join(header))
         for key in keys:
             line = [key, gps_base[key]] + [gps_corrs[key][i]
                                            for i in range(len(suffixes))] + [f'{gps_gmean[key]:.2f}']
-            f.write(','.join(map(str, line)) + '\n')
+            f.write('\n' + ','.join(map(str, line)))
+    with open('tec_correlation_table.tex', 'w') as f:
+        header.insert(1, 'Source')
+        f.write(
+rf"""\small
+\begin{{tabular}}{{{"c"*(len(header))}}}
+\hline
+{" & ".join(header)} \\
+\hline
+
+"""
+        )
+        for key in keys:
+            l1 = ['Digisonde', rf'{digi_base[key]:.0f}\%'] + [rf'{digi_corrs[key][i]:.0f}\%' for i in range(len(suffixes))] + [rf'{digi_gmean[key]:.0f}\%']
+            l2 = ['GPS', rf'{gps_base[key]:.0f}\%'] + [rf'{gps_corrs[key][i]:.0f}\%' for i in range(len(suffixes))] + [rf'{gps_gmean[key]:.0f}\%']
+            f.write(
+rf"""\multirow{{2}}{{*}}{{{key}}} & {' & '.join(l1)} \\
+    & {' & '.join(l2)} \\
+\hline
+"""
+            )
+        f.write(r"\end{tabular}")
 
 
 # %%
@@ -192,68 +219,70 @@ def plot_density_stat(stats):
 
     dates = list(stats.keys())
     dates.sort()
-    for idx, (date, ax) in enumerate(zip(dates, axes.flatten())):
-        ax: Axes = ax
-        ds = stats[date]
-        ttstamps = ds.density.tstamp.values.copy()
-        tstamps = [pd.to_datetime(t).to_pydatetime().astimezone(
-            pytz.timezone('US/Eastern')) for t in ttstamps]
-        start = tstamps[0]
-        start = datetime(start.year, start.month,
-                         start.day, start.hour)
-        legends = []
-        ltexts = []
-        baseval = ds.loc[dict(suffix=0)]
-        for sp in species:
-            bss = baseval.loc[dict(species=sp)]
-            dss = ds.loc[dict(species=sp)]
-            ttstamps = dss.density.tstamp.values.copy()
+    with open('fit_den_stats.csv', 'w') as csvhandle, open('fit_den_stats.tex', 'w') as texhandle:
+
+        for idx, (date, ax) in enumerate(zip(dates, axes.flatten())):
+            ax: Axes = ax
+            ds = stats[date]
+            ttstamps = ds.density.tstamp.values.copy()
             tstamps = [pd.to_datetime(t).to_pydatetime().astimezone(
                 pytz.timezone('US/Eastern')) for t in ttstamps]
-            base = bss['density'].values
-            meanval = dss['meanval'].values
-            stdval = dss['stdval'].values
-            minval = dss['minval'].values
-            maxval = dss['maxval'].values
-            geomean = dss['geomean'].values
-            _, base, _ = fill_array_1d(base, tstamps)
-            _, meanval, _ = fill_array_1d(meanval, tstamps)
-            _, stdval, _ = fill_array_1d(stdval, tstamps)
-            _, minval, _ = fill_array_1d(minval, tstamps)
-            _, maxval, _ = fill_array_1d(maxval, tstamps)
-            tstamps, geomean, nanfill = fill_array_1d(
-                geomean, tstamps)  # type: ignore
-            ttstamps = np.asarray([t.timestamp()
-                                  for t in tstamps], dtype=float)
-            ttstamps -= start.timestamp()
-            ttstamps /= 3600  # convert to hours
-            assert len(ttstamps) == len(
-                meanval), f'{date} {sp} length mismatch: {len(ttstamps)} != {len(meanval)}'
-            # line, = ax.plot(ttstamps, base, **lprops[sp])
-            line, = ax.plot(ttstamps, meanval, **lprops[sp])
-            fill1 = ax.fill_between(ttstamps, meanval - stdval, meanval + stdval,
-                                    alpha=0.2, color=lprops[sp]['color'], edgecolor=None)
-            # fill2 = ax.fill_between(ttstamps, minval, maxval,
-            #                         alpha=0.2, color=lprops[sp]['color'])
-            ax_xlim.append((ttstamps[0], ttstamps[-1]))
-            ax_ylim.append((np.nanmin(minval), np.nanmax(maxval)))
-            ax_ylim.append((np.nanmin(meanval - stdval),
-                           np.nanmax(meanval + stdval)))
-            legends.append((line, fill1))
-            ltexts.append(fr'[{lprops[sp]["label"]}]$\pm 1\sigma$')
-        if not idx % 2 == 0:
-            ax.yaxis.set_ticks_position('none')
-        ylim = ax.get_ylim()
-        if nanfill is not None:  # type: ignore
-            nanfill: np.ndarray = nanfill  # type: ignore
-            tmin = nanfill[0]
-            tmax = nanfill[-1]
-            trange = np.asarray(ttstamps)[tmin:tmax + 1]
-            ax.fill_between(trange, -10, 10, color='k',
-                            alpha=0.2, edgecolor=None, hatch='//')
-            datagaps[idx] = (ttstamps[tmin:tmax + 1].mean(),)
-        ax.text(0.5, 0.99, f'{start:%Y-%m-%d}',
-                ha='center', va='top', transform=ax.transAxes)
+            start = tstamps[0]
+            start = datetime(start.year, start.month,
+                            start.day, start.hour)
+            legends = []
+            ltexts = []
+            baseval = ds.loc[dict(suffix=0)]
+            for sp in species:
+                bss = baseval.loc[dict(species=sp)]
+                dss = ds.loc[dict(species=sp)]
+                ttstamps = dss.density.tstamp.values.copy()
+                tstamps = [pd.to_datetime(t).to_pydatetime().astimezone(
+                    pytz.timezone('US/Eastern')) for t in ttstamps]
+                base = bss['density'].values
+                meanval = dss['meanval'].values
+                stdval = dss['stdval'].values
+                minval = dss['minval'].values
+                maxval = dss['maxval'].values
+                geomean = dss['geomean'].values
+                _, base, _ = fill_array_1d(base, tstamps)
+                _, meanval, _ = fill_array_1d(meanval, tstamps)
+                _, stdval, _ = fill_array_1d(stdval, tstamps)
+                _, minval, _ = fill_array_1d(minval, tstamps)
+                _, maxval, _ = fill_array_1d(maxval, tstamps)
+                tstamps, geomean, nanfill = fill_array_1d(
+                    geomean, tstamps)  # type: ignore
+                ttstamps = np.asarray([t.timestamp()
+                                    for t in tstamps], dtype=float)
+                ttstamps -= start.timestamp()
+                ttstamps /= 3600  # convert to hours
+                assert len(ttstamps) == len(
+                    meanval), f'{date} {sp} length mismatch: {len(ttstamps)} != {len(meanval)}'
+                # line, = ax.plot(ttstamps, base, **lprops[sp])
+                line, = ax.plot(ttstamps, meanval, **lprops[sp])
+                fill1 = ax.fill_between(ttstamps, meanval - stdval, meanval + stdval,
+                                        alpha=0.2, color=lprops[sp]['color'], edgecolor=None)
+                # fill2 = ax.fill_between(ttstamps, minval, maxval,
+                #                         alpha=0.2, color=lprops[sp]['color'])
+                ax_xlim.append((ttstamps[0], ttstamps[-1]))
+                ax_ylim.append((np.nanmin(minval), np.nanmax(maxval)))
+                ax_ylim.append((np.nanmin(meanval - stdval),
+                            np.nanmax(meanval + stdval)))
+                legends.append((line, fill1))
+                ltexts.append(fr'[{lprops[sp]["label"]}]$\pm 1\sigma$')
+            if not idx % 2 == 0:
+                ax.yaxis.set_ticks_position('none')
+            ylim = ax.get_ylim()
+            if nanfill is not None:  # type: ignore
+                nanfill: np.ndarray = nanfill  # type: ignore
+                tmin = nanfill[0]
+                tmax = nanfill[-1]
+                trange = np.asarray(ttstamps)[tmin:tmax + 1]
+                ax.fill_between(trange, -10, 10, color='k',
+                                alpha=0.2, edgecolor=None, hatch='//')
+                datagaps[idx] = (ttstamps[tmin:tmax + 1].mean(),)
+            ax.text(0.5, 0.99, f'{start:%Y-%m-%d}',
+                    ha='center', va='top', transform=ax.transAxes)
 
     ax_xlim = np.asarray(ax_xlim, dtype=float)
     ax_ylim = np.asarray(ax_ylim, dtype=float)
@@ -294,7 +323,7 @@ def plot_density_stat(stats):
     #     print(line, text)
     lax.legend(legends, ltexts, loc='center', fontsize=6, frameon=False, ncol=len(ltexts), mode='expand') # type: ignore
     # draw_vertical_legend(lax, items=legends, texts=ltexts, fontsize=6)
-    fig.savefig(ROOT_DIR / 'density_stats_multirun.png',
+    fig.savefig(ROOT_DIR / 'density_stats_multirun.pdf',
                 dpi=600, bbox_inches='tight')
     fig.show()
 

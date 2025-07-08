@@ -1,6 +1,6 @@
 # %% Imports
 from __future__ import annotations
-from common_funcs import LINESTYLE_DICT, get_date, fill_array
+from common_funcs import LINESTYLE_DICT, get_date, fill_array_1d
 from settings import Directories, is_interactive_session
 import datetime as dt
 from io import TextIOWrapper
@@ -30,6 +30,7 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
     with lzma.open(file, 'rb') as f:
         fitres = pickle.load(f)
     tstamps = [x[0] for x in fitres]
+    ttstamps = [pd.to_datetime(t).to_pydatetime().astimezone(pytz.utc) for t in tstamps]
     start = pd.to_datetime(
         tstamps[0]).to_pydatetime()
     end = pd.to_datetime(
@@ -72,14 +73,15 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
         den_n4s), np.nanmin(den_n4s), np.nanmax(den_n4s))
     stats['e-'] = (np.nanmean(den_e), np.nanstd(den_e),
                    np.nanmedian(den_e), np.nanmin(den_e), np.nanmax(den_e))
-    _, den_o, _ = fill_array(den_o, tstamps)  # type: ignore
-    _, den_o2, _ = fill_array(den_o2, tstamps)  # type: ignore
-    _, den_n2, _ = fill_array(den_n2, tstamps)  # type: ignore
-    _, den_no, _ = fill_array(den_no, tstamps)  # type: ignore
-    _, den_n4s, _ = fill_array(den_n4s, tstamps)  # type: ignore
-    tstamps, den_e, _ = fill_array(den_e, tstamps)  # type: ignore
+    _, den_o, _ = fill_array_1d(den_o, ttstamps)  # type: ignore
+    _, den_o2, _ = fill_array_1d(den_o2, ttstamps)  # type: ignore
+    _, den_n2, _ = fill_array_1d(den_n2, ttstamps)  # type: ignore
+    _, den_no, _ = fill_array_1d(den_no, ttstamps)  # type: ignore
+    _, den_n4s, _ = fill_array_1d(den_n4s, ttstamps)  # type: ignore
+    ttstamps, den_e, _ = fill_array_1d(den_e, ttstamps)  # type: ignore
+    tstamps = list(map(lambda t: (t - sstart).total_seconds() / 3600, ttstamps))
     tstamps = np.asarray(tstamps, dtype=float)
-    tstamps /= 3600  # convert to hours
+    # tstamps /= 3600  # convert to hours
     fig = plt.figure(figsize=(4.8, 3), dpi=300)
     ax = fig.add_subplot(111)
     ax.plot(tstamps, den_o,
@@ -105,7 +107,8 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
     ax.set_ylim(0.25, 3)
     ax.set_title(f'{sstart:%Y-%m-%d} {start:%H:%M} - {end:%H:%M} (UTC-05:00)')
     if save_figs:
-        fig.savefig(output / f'fit_den_{date}.png',
+        figfile = output / f'fit_den_{date}.png'
+        fig.savefig(figfile,
                     dpi=600, bbox_inches='tight')
     if is_interactive_session():
         print(f'Showing figure for {sstart:%Y-%m-%d}')
@@ -132,7 +135,7 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
 def runner(settings: Directories, save_figs: bool = True):
     model_dir = settings.model_dir
     vertprops_dir = settings.vertprops_dir
-    files = list(model_dir.glob('fit_den_*.xz'))
+    files = list(model_dir.glob('fitres*.xz'))
     files.sort(key=get_date)
     keys = ['O', 'O2', 'N2', 'NO', 'N4S', 'e-']
     dates = list(map(get_date, files))
@@ -141,7 +144,7 @@ def runner(settings: Directories, save_figs: bool = True):
         for key in keys:
             ofile.write(f'{key} Mean,\t{key} Min,\t{key} Max,\t')
         tfile.write(
-            r"""
+            r"""\small
 \begin{tabular}{r c c c c c c}
     \hline
     Date & O & O$_2$ & N$_2$ & NO & N($^4S$) & e$^-$ \\

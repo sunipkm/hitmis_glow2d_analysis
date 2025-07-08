@@ -24,3 +24,6 @@ keomodel_*
 # Ignore anything but python files in glow2d
 !glow2d
 !glow2d/*.py
+*.aux
+density_stats_multirun.pdf
+*.png
