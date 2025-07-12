@@ -162,28 +162,6 @@ for fidx, date in enumerate(dates):
         plt.show()
     else:
         plt.close(fig)
-# %% GPS TEC
-
-@staticvars(gpstec=None)
-def get_gps_tec(tstamps: Iterable[Numeric], lat: Iterable[Numeric], lon: Iterable[Numeric], angle: Iterable[Numeric], *, fname: str = 'gpstec_lowell.nc') -> xr.Dataset:
-    if get_gps_tec.gpstec is None: # type: ignore
-        get_gps_tec.gpstec = xr.open_dataset(fname) # type: ignore
-    gpstec: xr.Dataset = get_gps_tec.gpstec # type: ignore
-    gdlat = geocent_to_geodet(lat) # type: ignore
-    assert (len(gdlat) == len(lon) == len(angle)) # type: ignore
-    gpstec = gpstec.sel(timestamps=tstamps, method='nearest')
-    tecvals = np.zeros((len(tstamps), len(angle))) # type: ignore
-    dtecvals = np.zeros((len(tstamps), len(angle))) # type: ignore
-    for idx, (gl, lo) in enumerate(zip(gdlat, lon)): # type: ignore
-        val = gpstec.sel(gdlat=gl, method='nearest')
-        val = val.sel(glon=lo, method='nearest')
-        tecvals[:, idx] = val.tec.values
-        dtecvals[:, idx] = val.dtec.values
-    gpstec = xr.Dataset({'tec': (('timestamps', 'angle'), tecvals),
-                         'dtec': (('timestamps', 'angle'), dtecvals)},
-                        coords={'timestamps': tstamps, 'angle': angle, 'lat': ('angle', gdlat), 'lon': ('angle', lon)})
-    return gpstec
-
 
 # %%
 num_rows = int(np.floor(len(dates) / 2))  # 2 columns
@@ -210,7 +188,7 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     lat, lon = 42.64981361744372, -71.31681056737486
     if (len(tstamps) == 0):
         continue
-    tecsrc = get_gps_tec(tstamps.astype(int)*1e-9, [lat], [lon], [0])
+    # tecsrc = get_gps_tec(tstamps.astype(int)*1e-9, [lat], [lon], [0])
     height = sds.height.values
     dheight = np.diff(height).mean()
     imgs_5577 = ds['5577'].values.T[::-1, :] * \
@@ -250,10 +228,10 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     end = tstamps[-1].astimezone(pytz.timezone('US/Eastern'))
     end = pd.to_datetime(end).round('1h').to_pydatetime()
     ttstamps = [(t.timestamp() - start.timestamp()) / 3600 for t in tstamps]
-    gps_tstamp = tecsrc.timestamps.values.copy()
-    gps_tstamp = [pd.to_datetime(t*1e9).to_pydatetime() for t in gps_tstamp]
-    gps_tstamp = [(t.timestamp() - start.timestamp()) /
-                  3600 for t in gps_tstamp]
+    # gps_tstamp = tecsrc.timestamps.values.copy()
+    # gps_tstamp = [pd.to_datetime(t*1e9).to_pydatetime() for t in gps_tstamp]
+    # gps_tstamp = [(t.timestamp() - start.timestamp()) /
+    #               3600 for t in gps_tstamp]
     height_ang = np.rad2deg(height[::-1])
     height_ang -= height_ang[za_idx] - 35
     # fig.suptitle('%s - %s (UTC-5:00) [Elevation: %.0f$^\circ$]' % (start.strftime(
@@ -439,7 +417,7 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     lat, lon = 42.64981361744372, -71.31681056737486
     if (len(tstamps) == 0):
         continue
-    tecsrc = get_gps_tec(tstamps.astype(int)*1e-9, [lat], [lon], [0])
+    # tecsrc = get_gps_tec(tstamps.astype(int)*1e-9, [lat], [lon], [0])
     height = sds.height.values
     dheight = np.diff(height).mean()
     imgs_5577 = ds['5577'].values.T[::-1, :] * \
