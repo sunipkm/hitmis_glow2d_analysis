@@ -1,7 +1,9 @@
 # %% Imports
 from __future__ import annotations
+from queue import Empty, Queue, ShutDown
+from threading import Thread
 from settings import Directories, is_interactive_session
-
+from common_funcs import get_smoothed_geomag
 from pathlib import Path
 import signal
 from collections.abc import Iterable
@@ -11,7 +13,7 @@ import gc
 import lzma
 import pickle
 from time import perf_counter_ns
-from typing import Dict, List, Optional, SupportsFloat as Numeric, Tuple
+from typing import Any, Dict, List, Optional, SupportsFloat as Numeric, Tuple
 import uncertainties
 import xarray as xr
 import numpy as np
@@ -107,50 +109,9 @@ def strfdelta(tdelta, fmt='{D:02}d {H:02}h {M:02}m {S:02}s', inputtype='timedelt
     values = {}
     for field in possible_fields:
         if field in desired_fields and field in constants:
-            values[field], remainder = divmod(remainder, constants[field]) # type: ignore
+            values[field], remainder = divmod(
+                remainder, constants[field])  # type: ignore
     return f.format(fmt, **values)
-
-
-def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None): # type: ignore
-    y = interp1d(xp, yp, kind='nearest-up', fill_value='extrapolate')(x) # type: ignore
-    y = gaussian_filter1d(y, sigma=sigma)
-    if round is not None:
-        y = np.round(y, decimals=round)
-    return y
-
-
-def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    tdtime = list(map(lambda t: pd.to_datetime(
-        t).to_pydatetime().astimezone(pytz.utc), tstamps))
-    tdtime_in = [tdtime[0] - dt.timedelta(hours=6), tdtime[0] - dt.timedelta(hours=3)] + tdtime + [
-        tdtime[-1] + dt.timedelta(hours=3), tdtime[-1] + dt.timedelta(hours=6)]
-    ttidx = np.asarray(list(map(lambda t: t.timestamp(), tdtime)))
-    pdtime = []
-    f107a = []
-    f107 = []
-    f107p = []
-    ap = []
-    for td in tdtime_in:
-        ip = gi.get_indices(
-            [td - dt.timedelta(days=1), td], 81, tzaware=tzaware) # type: ignore
-        f107a.append(ip["f107s"].iloc[1])
-        f107.append(ip['f107'].iloc[1])
-        f107p.append(ip['f107'].iloc[0])
-        ap.append(ip["Ap"].iloc[1])
-        pdtime.append(pd.to_datetime(
-            ip.index[1].value).to_pydatetime().timestamp())
-    pdtime = np.asarray(pdtime)
-    ap = np.asarray(ap)
-    f107a = np.asarray(f107a)
-    f107 = np.asarray(f107)
-    f107p = np.asarray(f107p)
-
-    ap = do_interp_smoothing(ttidx, pdtime, ap, round=0)  # rounds to integer
-    f107 = do_interp_smoothing(ttidx, pdtime, f107)  # does not round
-    f107a = do_interp_smoothing(ttidx, pdtime, f107a)  # does not round
-    f107p = do_interp_smoothing(ttidx, pdtime, f107p)  # does not round
-
-    return tdtime, ap, f107, f107a, f107p # type: ignore
 
 
 # %%
@@ -160,13 +121,22 @@ scale_6300 = sds['6300'].values[::-1]
 za_min = sds['za_min'].values
 za_max = sds['za_max'].values
 # %%
+
+
 def pool_init():
     """Initialize the multiprocessing pool to ignore SIGINT signals.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+
 class GLOWMin:
-    def __init__(self, time: dt.datetime, lat: Numeric, lon: Numeric, heading: Numeric, geomag_params: Dict[str, Numeric], za_min: np.ndarray, za_max: np.ndarray, za_idx: int, br: Numeric, ratio: Numeric, d_br: Numeric, d_rat: Numeric, save_walk: bool):
+    def __init__(
+        self,
+        time: dt.datetime, lat: Numeric, lon: Numeric, heading: Numeric,
+        geomag_params: Dict[str, Numeric], za_min: np.ndarray, za_max: np.ndarray, za_idx: int,
+        br: Numeric, ratio: Numeric, d_br: Numeric, d_rat: Numeric,
+        save_walk: bool, pbar: tqdm, oldmodel: bool
+    ):
         self._time = time
         self._lat = lat
         self._lon = lon
@@ -182,11 +152,17 @@ class GLOWMin:
         self._iter = 0
         self._param = None
         self._diff = None
-        self._bright: List[np.ndarray] = None # type: ignore
+        self._bright: List[np.ndarray] = None  # type: ignore
         self._out = []
         self._save = save_walk
-        self._pool = mp.Pool(processes=4, initializer=pool_init)
+        self._pool = mp.Pool(
+            processes=mp.cpu_count() //
+            2,
+            initializer=pool_init
+        )
         self._start = perf_counter_ns()
+        self._pbar = pbar
+        self._oldmodel = oldmodel
 
     @property
     def fit_params(self):
@@ -209,37 +185,52 @@ class GLOWMin:
         if len(params) == 1:
             params = params[0]
         self._param = params
+        magmodel = 'POGO68' if self._oldmodel else 'IGRF14'
+        version = 'MSIS00_IRI90' if self._oldmodel else 'MSIS21_IRI20'
         try:
-            iono = glow2d.polar_model(self._time, self._lat, self._lon, self._heading, n_pts=20,
-                                  geomag_params=self._geopar, Q=None, Echar=None,
-                                  density_perturbation=(
-                                      params[0], params[1], params[2], params[3], params[4], 1, params[5]),
-                                  show_progress=False, mpool=self._pool)
+            iono = glow2d.polar_model(
+                self._time, self._lat, self._lon, self._heading, n_pts=20,
+                show_progress=False, mpool=self._pool,
+                kwargs={
+                    'Q': None,
+                    'Echar': None,
+                    'geomag_params': self._geopar,
+                    'density_perturbation': (
+                        params[0], params[1], params[2], params[3], params[4], 1, params[5]
+                    ),
+                    'magmodel': magmodel,
+                    'version': version
+                }
+            )
         except KeyboardInterrupt:
             self._pool.terminate()
             self._pool.join()
-            exit(1)
+            exit(0)
 
-        ec5577 = glow2d.glow2d_polar.get_emission( # type: ignore
+        ec5577 = glow2d.glow2d_polar.get_emission(
             # ascending
-            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1] # type: ignore
+            # type: ignore
+            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1]
         ec6300 = glow2d.glow2d_polar.get_emission(
-            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1] # type: ignore
+            # type: ignore
+            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1]
         # 16 points around the midpoint
         idxs = slice(self._zaidx-8, self._zaidx+8)
         # idxs = [self._zaidx] # single point solver
         br_val = np.nanmean(ec6300[idxs])
         ratio_val = np.nanmean(ec5577[idxs] / br_val)
-        ret = ((((br_val - self._br) / self._br)**2) * 65 # type: ignore
-               + 35 * (((ratio_val - self._ratio) / self._ratio)**2)) / 100 # type: ignore
+        ret = ((((br_val - self._br) / self._br)**2) * 65  # type: ignore
+               + 35 * (
+                   ((ratio_val - self._ratio) / self._ratio)**2  # type: ignore
+        )) / 100  # type: ignore
         if self._save:
             self._out.append(
                 (params[0], params[1], params[2], params[3], params[4], params[5], ret))
         now = perf_counter_ns()
         if (now - self._start) > 120e9:
-            print(
-                f'Iteration {self._iter}: ({params}) | Err: {ret:.2e}', end='\r')
-            sys.stdout.flush()
+            self._pbar.set_description(
+                f'Iteration {self._iter}: ({params}) | Err: {ret:.2e}', refresh=True
+            )
         # ret = ((br_val - self._br)/self._dbr)**2 + ((ratio_val - self._ratio)/self._drat)**2
         self._diff = (br_val, self._br, ratio_val, self._ratio, ret)
         self._bright = [ec5577[::-1], ec6300[::-1]]  # descending
@@ -248,18 +239,141 @@ class GLOWMin:
         #     sys.stdout.flush()
 
         return ret
+# %%
+
+
+def draw_loop(file: Path, ready: Any, shutdown: Any, data: mp.Queue, save_fig: Optional[Path] = None):
+    tdata = []
+    br5577 = []
+    br6300 = []
+    ctrlc = False
+
+    ds = xr.load_dataset(file)
+    tstamps = ds.tstamp.values
+    start = pd.to_datetime(tstamps[0]).to_pydatetime()
+    end = pd.to_datetime(tstamps[-1]).to_pydatetime()
+    start += dt.timedelta(hours=1)
+    end -= dt.timedelta(hours=1)
+    # start = end - dt.timedelta(hours=2)
+    # end = start + dt.timedelta(hours=2)
+    ds = ds.loc[dict(tstamp=slice(start, end))]
+    tstamps = ds.tstamp.values
+    tlen = len(ds.tstamp.values)
+    height = sds.height.values
+    dheight = np.mean(np.diff(height))
+    tstamps = list(map(lambda t: pd.to_datetime(
+        t).to_pydatetime().astimezone(pytz.utc), tstamps))
+    ttstamps = list(map(lambda i: (
+        tstamps[i] - tstamps[0]).total_seconds()/3600, range(len(tstamps))))
+    imgs_5577 = (ds['5577'].values.T[::-1, :])[za_idx, :]
+    stds_5577 = (ds['5577_std'].values.T[::-1, :])[za_idx, :]
+    imgs_6300 = (ds['6300'].values.T[::-1, :])[za_idx, :]
+    stds_6300 = (ds['6300_std'].values.T[::-1, :])[za_idx, :]
+    imgs_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
+    stds_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
+    imgs_5577 = gaussian_filter(np.ma.array(
+        imgs_5577, mask=np.isnan(imgs_5577)), sigma=2)*scale_5577[za_idx]
+    stds_5577 = gaussian_filter(np.ma.array(
+        stds_5577, mask=np.isnan(stds_5577)), sigma=2)*scale_5577[za_idx]
+    imgs_6300 = gaussian_filter(np.ma.array(
+        imgs_6300, mask=np.isnan(imgs_6300)), sigma=2)*scale_6300[za_idx]
+    stds_6300 = gaussian_filter(np.ma.array(
+        stds_6300, mask=np.isnan(stds_6300)), sigma=2)*scale_6300[za_idx]
+    plt.ioff()
+    fig, axs = plt.subplots(
+        2, 1, figsize=(6, 4.8),
+        sharex=True,
+        tight_layout=True,
+        animated=True,
+    )
+    figtitle = fig.text(
+        0.5, 0.97, f'{start:%Y-%m-%d %H:%M} - {end:%Y-%m-%d %H:%M} (US/East)', ha='center')
+    # cax = make_color_axis(ax)
+    fig.set_dpi(100)
+    matplotlib.rcParams.update({'font.size': 10})
+    matplotlib.rcParams.update({'axes.titlesize': 10})
+    matplotlib.rcParams.update({'axes.labelsize': 10})
+    [axs[i].set_title(wl) for i, wl in enumerate(('5577 Å', '6300 Å'))]
+    for ax in axs:
+        ax.autoscale(enable=True, axis='y')
+
+    axs[0].plot(
+        ttstamps, (imgs_5577), color='g')
+    l_5577, = axs[0].plot([0], [np.nan], color='g', ls='-.')
+    s_5577 = axs[0].scatter([0], [np.nan], marker='x', color='k')
+    axs[1].plot(
+        ttstamps, (imgs_6300), color='r')
+    l_6300, = axs[1].plot([0], [np.nan], color='r', ls='-.')
+    s_6300 = axs[1].scatter([0], [np.nan], marker='x', color='k')
+    axs[0].fill_between(
+        ttstamps, imgs_5577 + stds_5577,
+        imgs_5577 - stds_5577, alpha=0.5, color='r'
+    )
+    axs[1].fill_between(
+        ttstamps, imgs_6300 + stds_6300,
+        imgs_6300 - stds_6300, alpha=0.5, color='r'
+    )
+    axs[1].set_xlim(np.min(ttstamps), np.max(ttstamps))
+    fig.show()
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+    ready.set()
+
+    dstart = perf_counter_ns()
+    while True:
+        if shutdown.is_set():
+            break
+        try:
+            figtitle.set_text(
+                f'{start:%Y-%m-%d %H:%M} - {end:%H:%M} (US/East) [{len(tdata):>3d}/{tlen:>3d}] [{strfdelta(dt.timedelta(seconds=(perf_counter_ns()-dstart)/1e9), fmt="{H:02}:{M:02}:{S:02}")}]')
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+        except KeyboardInterrupt:
+            print(f"Interrupted by user")
+            plt.close('all')
+            ctrlc = True
+            break
+        try:
+            curdata = data.get(timeout=0.1)
+        except Empty:
+            continue
+        except KeyboardInterrupt:
+            break
+        ts, p5577, p6300 = curdata
+        tdata.append(ts)
+        br5577.append(p5577)
+        br6300.append(p6300)
+        l_5577.set_data(tdata, br5577)
+        s_5577.set_offsets([tdata[-1], br5577[-1]])
+        l_6300.set_data(tdata, br6300)
+        s_6300.set_offsets([tdata[-1], br6300[-1]])
+        for ax in axs:
+            ax.relim()
+            ax.autoscale_view(scalex=False)
+    if not ctrlc and save_fig is not None:
+        fig.savefig(save_fig, dpi=300)
 
 
 # %%
 # dates = ['20220209']
-dates = ['20220126', '20220209', '20220215', '20220218',
-         '20220219', '20220226', '20220303', '20220304']
+dates = [
+    '20220126', '20220209', '20220215', '20220218',
+    '20220219', '20220226', '20220303', '20220304'
+]
 za_idx = 20
 
 
-def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx: int = 20, show_figs: bool = False, save_figs: bool = False):
+def run_glow_fit(
+    counts_dir: Path,
+    model_dir: Path,
+    dates: Iterable[str],
+    za_idx: int = 20,
+    random: bool = False,
+    show_figs: bool = False,
+    save_figs: bool = False,
+    oldmodel: bool = False,
+):
     for date in dates:
-
         model_file = model_dir / f'keofit_{date}.nc'
         fit_file = model_dir / f'fitres_{date}.xz'
         if model_file.exists() and fit_file.exists():
@@ -287,8 +401,6 @@ def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx
         stds_5577 = (ds['5577_std'].values.T[::-1, :])[za_idx, :]
         imgs_6300 = (ds['6300'].values.T[::-1, :])[za_idx, :]
         stds_6300 = (ds['6300_std'].values.T[::-1, :])[za_idx, :]
-        imgs_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
-        stds_6306 = (ds['6306'].values.T[::-1, :])[za_idx, :]
         imgs_5577 = gaussian_filter(np.ma.array(
             imgs_5577, mask=np.isnan(imgs_5577)), sigma=2)*scale_5577[za_idx]
         stds_5577 = gaussian_filter(np.ma.array(
@@ -299,7 +411,8 @@ def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx
             stds_6300, mask=np.isnan(stds_6300)), sigma=2)*scale_6300[za_idx]
 
         lat, lon = 42.64981361744372, -71.31681056737486
-        _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps)  # type: ignore
+        _, ap, f107, f107a, f107p = \
+            get_smoothed_geomag(tstamps)  # type: ignore
         br6300 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
         br5577 = np.zeros((len(ds.tstamp), len(ds.height)), dtype=float)
         fparams = np.zeros((len(ds.tstamp), 6), dtype=float)
@@ -308,39 +421,30 @@ def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx
         pbar = tqdm(range(len(ds.tstamp.values)), dynamic_ncols=True)
 
         if show_figs:
-            fig, ax = plt.subplots(2, 1, figsize=(
-                6, 4.8), sharex=True, tight_layout=True)
-            fig.suptitle('%s - %s (US/East)' %
-                         (start.strftime('%Y-%m-%d %H:%M'), end.strftime('%Y-%m-%d %H:%M')))
-            # cax = make_color_axis(ax)
-            fig.set_dpi(100)
-            matplotlib.rcParams.update({'font.size': 10})
-            matplotlib.rcParams.update({'axes.titlesize': 10})
-            matplotlib.rcParams.update({'axes.labelsize': 10})
-            [ax[i].set_title(wl) for i, wl in enumerate(('5577 Å', '6300 Å'))]
-
-            line, = ax[0].plot(
-                ttstamps, (imgs_5577), color='g')
-            l_5577, = ax[0].plot([0], [np.nan], color='g', ls='-.')
-            s_5577 = ax[0].scatter([0], [np.nan], marker='x', color='k')
-            line, = ax[1].plot(
-                ttstamps, (imgs_6300), color='r')
-            l_6300, = ax[1].plot([0], [np.nan], color='r', ls='-.')
-            s_6300 = ax[1].scatter([0], [np.nan], marker='x', color='k')
-            ax[0].fill_between(ttstamps, imgs_5577 + stds_5577,
-                               imgs_5577 - stds_5577, alpha=0.5, color='r')
-            ax[1].fill_between(ttstamps, imgs_6300 + stds_6300,
-                               imgs_6300 - stds_6300, alpha=0.5, color='r')
-            ax[1].set_xlim(np.min(ttstamps), np.max(ttstamps))
-            plt.ion()
-            plt.show()
-            fig.canvas.draw_idle()
-            fig.canvas.flush_events()
+            ready = mp.Event()
+            shutdown = mp.Event()
+            data_queue = mp.Queue()
+            plot_thread = mp.Process(None, draw_loop, args=(
+                counts_dir / f'hitmis_cts_{date}.nc',
+                ready,
+                shutdown,
+                data_queue,
+                model_dir / f'fitplot_{date}.png' if save_figs else None,
+            ))
+            plot_thread.start()
+            ready.wait()
+        else:
+            shutdown = None
+            data_queue = None
+            plot_thread = None
 
         LOW = 0.1
         HIGH = 4.0
 
-        x0 = tuple(np.random.uniform(0.5, 2, 6).tolist())  # (1, 1, 1, 1, 1, 1)
+        if random:
+            x0 = tuple(np.random.uniform(0.5, 2, 6).tolist())
+        else:
+            x0 = (1, 1, 1, 1, 1, 1)
         x_init = np.asarray(x0)
         with open(model_dir / 'initprops.txt', 'a') as initprops:
             initprops.write(start.strftime('%Y-%m-%d,'))
@@ -363,27 +467,41 @@ def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx
                     brat: uncertainties.UFloat = b57 / b63  # type: ignore
                     rat = brat.nominal_value
                     d_rat = brat.std_dev
-                    geomag_params = (
-                        f107a[idx], f107[idx], f107p[idx], ap[idx])
-                    minf = GLOWMin(tstamps[idx], lat, lon, 40, geomag_params=geomag_params, za_min=za_min,  # type: ignore
-                                   za_max=za_max, za_idx=za_idx, br=bgt, ratio=rat, d_br=b63.std_dev, d_rat=d_rat, save_walk=save)
-                    res: OptimizeResult = \
-                        least_squares(minf.update, x0=x0,
-                                      bounds=((LOW, LOW, LOW, LOW, LOW, LOW),
-                                              (HIGH, HIGH, HIGH, HIGH, HIGH, HIGH)),
-                                      diff_step=0.05, xtol=1e-10, ftol=1e-3, max_nfev=3000)
+                    geomag_params = {
+                        'f107a': f107a[idx],
+                        'f107': f107[idx],
+                        'f107p': f107p[idx],
+                        'Ap': ap[idx]
+                    }
+                    minf = GLOWMin(
+                        # type: ignore
+                        tstamps[idx], lat, lon, 40, geomag_params=geomag_params, za_min=za_min,
+                        za_max=za_max, za_idx=za_idx, br=bgt, ratio=rat, d_br=b63.std_dev, d_rat=d_rat, save_walk=save,
+                        pbar=pbar, oldmodel=oldmodel
+                    )
+                    res: OptimizeResult = least_squares(
+                        minf.update, x0=x0,
+                        bounds=((LOW, LOW, LOW, LOW, LOW, LOW),
+                                (HIGH, HIGH, HIGH, HIGH, HIGH, HIGH)),
+                        diff_step=0.05, xtol=1e-10, ftol=1e-3, max_nfev=3000
+                    )
                     if save:
                         out = minf.walk
 
                     fit_res.append((ds.tstamp.values[idx], res))
-                    x0 = (res.x[0], res.x[1], res.x[2],
-                          res.x[3], res.x[4], res.x[5])
+                    x0 = (
+                        res.x[0], res.x[1], res.x[2],
+                        res.x[3], res.x[4], res.x[5]
+                    )
                     fp = minf.fit_params
                     perf = list(minf.fit_perf)  # type: ignore
-                    br_diff = ((perf[0] - perf[1]) / perf[1]) * 100  # type: ignore
+                    br_diff = ((perf[0] - perf[1]) / perf[1]  # type: ignore
+                               ) * 100  # type: ignore
                     br_diff_str = '%+.2f' % (br_diff)
                     pbar.set_description(
-                        f'[{fp[0]:.2f} {fp[1]:.2f} {fp[2]:.2f} {fp[3]:.2f} {fp[4]:.2f} {fp[5]:.2f}] ({perf[1]:.2e}){br_diff_str}% | {perf[2]:.2f}<->{perf[3]:.2f} ({failed}) ', refresh=True) # type: ignore
+                        # type: ignore
+                        # type: ignore
+                        f'[{fp[0]:.2f} {fp[1]:.2f} {fp[2]:.2f} {fp[3]:.2f} {fp[4]:.2f} {fp[5]:.2f}] ({perf[1]:.2e}){br_diff_str}% | {perf[2]:.2f}<->{perf[3]:.2f} ({failed}) ', refresh=True)
                     out = minf.emission
                     br5577[idx, :] += out[0]
                     br6300[idx, :] += out[1]
@@ -399,25 +517,13 @@ def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx
                     pbar.set_description(
                         f'Failed {idx + 1}: {e}', refresh=True)
 
-                if show_figs:
-                    l_5577.set_data(ttstamps[:idx+1],  # type: ignore
-                                    br5577.T[::-1, :idx+1][za_idx, :])
-                    s_5577.set_offsets(  # type: ignore
-                        [ttstamps[idx], br5577.T[::-1, :][za_idx, idx]])
+                if data_queue is not None:
+                    data_queue.put((
+                        ttstamps[idx],
+                        br5577.T[::-1, :][za_idx, idx],
+                        br6300.T[::-1, :][za_idx, idx]
+                    ))
 
-                    ax[0].set_ylim(min(np.ma.array(br5577[:idx+1, za_idx], mask=np.isnan(br5577[:idx+1, za_idx])).min(), np.ma.array((imgs_5577 - 2*stds_5577), mask=np.isnan((imgs_5577 - 2*stds_5577))).min()), # type: ignore
-                                   max(np.ma.array(br5577[:idx+1, za_idx], mask=np.isnan(br5577[:idx+1, za_idx])).max(), np.ma.array((imgs_5577 + 2*stds_5577), mask=np.isnan((imgs_5577 + 2*stds_5577))).max()))
-
-                    l_6300.set_data(ttstamps[:idx+1],  # type: ignore
-                                    br6300.T[::-1, :idx+1][za_idx, :])
-                    s_6300.set_offsets(  # type: ignore
-                        [ttstamps[idx], br6300.T[::-1, :][za_idx, idx]])
-
-                    ax[1].set_ylim(min(np.ma.array(br6300[:idx+1, za_idx], mask=np.isnan(br6300[:idx+1, za_idx])).min(), np.ma.array((imgs_6300 - 2*stds_6300), mask=np.isnan((imgs_6300 - 2*stds_6300))).min()), # type: ignore
-                                   max(np.ma.array(br6300[:idx+1, za_idx], mask=np.isnan(br6300[:idx+1, za_idx])).max(), np.ma.array((imgs_6300 + 2*stds_6300), mask=np.isnan((imgs_6300 + 2*stds_6300))).max()))
-
-                    fig.canvas.draw_idle()  # type: ignore
-                    fig.canvas.flush_events()  # type: ignore
         time_end = perf_counter_ns()
         tdelta = dt.timedelta(seconds=(time_end - time_start)*1e-9)
         print(f'[{start.strftime("%Y-%m-%d")}]: Processing time: {strfdelta(tdelta)}, total: {len(ds.tstamp.values)}, failed: {failed}')
@@ -425,17 +531,19 @@ def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx
             os.remove(model_dir / f'fitlog_{date}.txt')
         time_start = perf_counter_ns()
         kds = xr.Dataset(
-            data_vars={'5577': (('tstamp', 'height'), br5577),
-                       '6300': (('tstamp', 'height'), br6300),
-                       'ap': (('tstamp'), ap),
-                       'f107a': (('tstamp'), f107a),
-                       'f107': (('tstamp'), f107),
-                       'f107p': (('tstamp'), f107p),
-                       'init_params': (('elems'), x_init),
-                       'density_perturbation': (('tstamp', 'elems'), fparams),
-                       'lat': (('tstamp'), [lat]*len(tstamps)),
-                       'lon': (('tstamp'), [lon]*len(tstamps)),
-                       'to_r': 1/(dheight * 4*np.pi*1e-6)},
+            data_vars={
+                '5577': (('tstamp', 'height'), br5577),
+                '6300': (('tstamp', 'height'), br6300),
+                'ap': (('tstamp'), ap),
+                'f107a': (('tstamp'), f107a),
+                'f107': (('tstamp'), f107),
+                'f107p': (('tstamp'), f107p),
+                'init_params': (('elems'), x_init),
+                'density_perturbation': (('tstamp', 'elems'), fparams),
+                'lat': (('tstamp'), [lat]*len(tstamps)),
+                'lon': (('tstamp'), [lon]*len(tstamps)),
+                'to_r': 1/(dheight * 4*np.pi*1e-6)
+            },
             coords={'tstamp': ds.tstamp.values, 'height': sds.height.values,
                     'elems': ['O', 'O2', 'N2', 'N4S', 'N2D', 'e']}
         )
@@ -462,15 +570,9 @@ def run_glow_fit(counts_dir: Path, model_dir: Path, dates: Iterable[str], za_idx
         tdelta = dt.timedelta(seconds=(time_end - time_start)*1e-9)
         print(f'[{start.strftime("%Y-%m-%d")}]: Saved in {strfdelta(tdelta)}')
 
-        mod_5577 = kds['5577'].values.T[::-1, :]
-        mod_6300 = kds['6300'].values.T[::-1, :]
-
-        if show_figs:
-            if save_figs:
-                fig.savefig(model_dir / f'fit_{date}.png')  # type: ignore
-
-            plt.close(fig=fig)  # type: ignore
-            plt.ioff()
+        if shutdown is not None and plot_thread is not None:
+            shutdown.set()
+            plot_thread.join()
 
 
 # %% Run code
@@ -488,6 +590,10 @@ if not is_interactive_session():
                         help='Show fit figures during processing.')
     parser.add_argument('--save_figs', action='store_true',
                         help='Save fit figures to disk.')
+    parser.add_argument('--random', action='store_true',
+                        help='Use random initial parameters for fitting.')
+    parser.add_argument('--oldmodel', action='store_true',
+                        help='Use old atmosphere and ionosphere models.')
     args = parser.parse_args()
     suffixes = list(map(lambda x: x.strip(), args.suffix))
     suffixes = list(filter(lambda x: len(x) > 0, suffixes))
@@ -499,10 +605,12 @@ if not is_interactive_session():
         show_figs = args.show_figs
         print(f'Model directory: {settings.model_dir}')
         run_glow_fit(
-        counts_dir=settings.counts_dir,
-        model_dir=settings.model_dir,
-        dates=args.dates,
-        za_idx=args.za_idx,
-        show_figs=args.show_figs,
-        save_figs=args.save_figs
-    )
+            counts_dir=settings.counts_dir,
+            model_dir=settings.model_dir,
+            dates=args.dates,
+            za_idx=args.za_idx,
+            random=args.random,
+            show_figs=args.show_figs,
+            save_figs=args.save_figs,
+            oldmodel=args.oldmodel,
+        )

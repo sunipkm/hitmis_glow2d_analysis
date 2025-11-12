@@ -23,8 +23,13 @@ if not usetex:
     # computer modern math text
     matplotlib.rcParams.update({'mathtext.fontset': 'cm'})
 
-matplotlib.rc('font', **{'family': 'serif',
-                         'serif': ['Times' if usetex else 'Times New Roman']})
+matplotlib.rc(
+    'font',
+    **{
+        'family': 'serif',
+        'serif': ['Times' if usetex else 'Times New Roman']
+    }
+)
 # for Palatino and other serif fonts use:
 # rc('font',**{'family':'serif','serif':['Palatino']})
 matplotlib.rc('text', usetex=usetex)
@@ -32,15 +37,17 @@ matplotlib.rc('text', usetex=usetex)
 
 
 def do_interp_smoothing(x: np.ndarray, xp: np.ndarray, yp: np.ndarray, sigma: int | float = 22.5, round: int = None):  # type: ignore
-    y = interp1d(xp, yp, kind='nearest-up',
-                 fill_value='extrapolate')(x)  # type: ignore
+    y = interp1d(
+        xp, yp, kind='nearest-up',
+        fill_value='extrapolate'  # type: ignore
+    )(x)
     y = gaussian_filter1d(y, sigma=sigma)
     if round is not None:
         y = np.round(y, decimals=round)
     return y
 
 
-def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def get_smoothed_geomag(tstamps: np.ndarray, tzaware: bool = False) -> Tuple[List, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     tdtime = list(map(lambda t: pd.to_datetime(
         t).to_pydatetime().astimezone(pytz.utc), tstamps))
     tdtime_in = [tdtime[0] - dt.timedelta(hours=6), tdtime[0] - dt.timedelta(hours=3)] + tdtime + [
@@ -82,6 +89,8 @@ def get_date(filename: Path) -> str:
     return base.rsplit('.')[0].rsplit('_')[-1]
 
 # %%
+
+
 def fill_array(arr: np.ndarray, tstamps: List[dt.datetime], axis: int = 1) -> Tuple[List[dt.datetime], np.ndarray, bool]:
     if arr.ndim != 2:
         raise ValueError('Array must be 2 dim')
@@ -124,6 +133,8 @@ def fill_array(arr: np.ndarray, tstamps: List[dt.datetime], axis: int = 1) -> Tu
     return (tstamps, out, True)
 # %%
 # %%
+
+
 def fill_array_1d(arr: np.ndarray, tstamps: List[dt.datetime]) -> Tuple[List[dt.datetime], np.ndarray, Optional[np.ndarray]]:
     if arr.ndim != 1:
         raise ValueError('Array must be 1 dim')
@@ -147,7 +158,7 @@ def fill_array_1d(arr: np.ndarray, tstamps: List[dt.datetime]) -> Tuple[List[dt.
     nanlocs = []
     for idx, oi in enumerate(oidx):
         out[start:oi+1] = arr[dstart:oi+1]
-        
+
         start = oi + gaps[idx]
         nanlocs.append(oi)
         dstart = oi + 1
@@ -231,6 +242,7 @@ def get_tec(iono: xr.Dataset) -> np.ndarray:
         tec[idx] += 2*trapz(ne[idx, :], alt)
     tec *= 1e9  # convert to m^-2
     return tec
+
 
 # %% Line styles
 LINESTYLE_STR = [
