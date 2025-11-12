@@ -123,7 +123,7 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
         for key in keys:
             vals = stats[key]
             ofile.write(
-                f'{vals[0]:.3f}+/-{vals[1]:.3f},\t{vals[3]:.3f},\t{vals[4]:.3f},\t')
+                f'{vals[0]:.3f}+/-{vals[1]/vals[0]*100:.3f}%,\t{vals[3]:.3f},\t{vals[4]:.3f},\t')
             tfile.write(
                 f'& ${vals[0]:.2f}^{{{vals[4]:.2f}}}_{{{vals[3]:.2f}}}$ ')
         tfile.write(r'\\' + '\n')

@@ -1,5 +1,7 @@
 # %% Imports
 from __future__ import annotations
+
+from matplotlib.gridspec import GridSpec
 from common_funcs import fill_array, geocent_to_geodet, make_color_axis
 from settings import Directories, is_interactive_session
 import datetime as dt
@@ -394,9 +396,21 @@ def filter_nan_gaussian_conserving(arr, sigma):
 za_idx = 20
 
 num_rows = int(np.floor(len(dates) / 2))  # 2 columns
-fig, axes = plt.subplots(num_rows, 2, figsize=(
-    4.8, 2*num_rows), sharex=True, sharey=True, dpi=300)
-fig.subplots_adjust(hspace=0, wspace=0.1)
+gspec = GridSpec(num_rows + 1, 2, hspace=0, wspace=0.1, height_ratios=[0.1] + [1]*num_rows)
+fig = plt.figure(figsize=(4.8, 2*num_rows), dpi=300)
+lax = fig.add_subplot(gspec[0, :]) # legend axis
+lax.set_axis_off()
+
+axes = []
+for i in range(num_rows):
+    axes.append([])
+    for j in range(2):
+        if i == 0:
+            ax = fig.add_subplot(gspec[i + 1, j])
+        else:
+            ax = fig.add_subplot(gspec[i + 1, j], sharex=axes[0][j], sharey=axes[0][j])
+        axes[i].append(ax)
+axes = np.array(axes)
 # fig.suptitle('Keogram Elevation: %.0f$^\circ$' % (np.rad2deg(height[za_idx]) + 18))
 
 ax_xlim = []
@@ -487,10 +501,10 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     tax: plt.Axes = ax.twinx() # type: ignore
     tax.set_ylim(180, 380)
     if fidx % 2:
-        tax.set_ylabel('hmF', fontsize=8)
+        tax.set_ylabel('hmF$_2$', fontsize=8)
     else:
         plt.setp(tax.get_yticklabels(), visible=False)
-    tax.plot(ttstamps, hmf, markersize=0.4,
+    s_hmf, = tax.plot(ttstamps, hmf, markersize=0.4,
              marker='o', ls='', lw=0.65, color='b')
     # ax.set_yscale('log')
 
@@ -535,9 +549,8 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
         ax.set_ylabel('Normalized Variation')
     else:
         ax.yaxis.set_ticks_position('none')
-    lobjs = [(l_55, f_55), m_55, (l_63, f_63), m_63]  # , l_ap] # type: ignore
-    ltext = ['5577Å Measurement', '5577Å Model',
-             '6300Å Measurement', '6300Å Model']  # , 'a$_p$ Index']
+    lobjs = [s_hmf, l_55, l_63, l_hmf]  # , l_ap] # type: ignore
+    ltext = ['hmF$_2$ (km)', '5577Å Variability', '6300Å Variability', 'hmF$_2$ Variability']  # , 'a$_p$ Index']
     if nanfill:
         tmin = nanloc[0] - 1
         tmax = nanloc[-1] + 1
@@ -548,7 +561,7 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
         lobjs.append(nfb)
         ltext.append('Data Unavailable')
     ax.set_ylim(ylim)
-    ax.text(0.5, 0.99, f'{start:%Y-%m-%d}\nhmF variation: {2*hmf_std:.2f} km',
+    ax.text(0.5, 0.99, f'{start:%Y-%m-%d}\nhmF$_2$ variation: {2*hmf_std:.2f} km',
             ha='center', va='top', transform=ax.transAxes, fontsize=8)
     # ax.legend(
     #     lobjs, ltext
@@ -575,6 +588,15 @@ for ax in axes.flatten()[-2:]:
     xticks = list(map(lambda x: fmt_time(x, start), xticks))
     ax.set_xticklabels(xticks, rotation=45)
     ax.set_xlabel("Local Time (UTC$-$05:00)")
+
+for (idx, ax) in enumerate(axes.flatten()):
+    if idx % 2:
+        plt.setp(ax.get_yticklabels(), visible=False)
+
+for ax in axes[:-1, :].flatten():
+    plt.setp(ax.get_xticklabels(), visible=False)
+
+lax.legend(lobjs, ltext, loc='center', fontsize=6, frameon=False, ncol=len(ltext), mode='expand')
 fig.savefig(KEOGRAMS_DIR / 'hmf_variation.pdf', dpi=600, bbox_inches='tight')
 if is_interactive_session():
     plt.show()

@@ -1,7 +1,7 @@
 # %% Imports
 from __future__ import annotations
 from itertools import repeat
-from common_funcs import fill_array, get_date, make_color_axis
+from common_funcs import fill_array, get_date, make_color_axis, get_smoothed_geomag
 from settings import Directories, is_interactive_session
 from collections.abc import Iterable
 import datetime as dt
