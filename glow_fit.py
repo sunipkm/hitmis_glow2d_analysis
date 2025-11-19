@@ -209,11 +209,13 @@ class GLOWMin:
 
         ec5577 = glow2d.glow2d_polar.get_emission(
             # ascending
-            # type: ignore
-            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1]
+            iono, feature='5577',  # type: ignore
+            za_min=self._zamin, za_max=self._zamax,
+        )[::-1]
         ec6300 = glow2d.glow2d_polar.get_emission(
-            # type: ignore
-            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1]
+            iono, feature='6300',  # type: ignore
+            za_min=self._zamin, za_max=self._zamax,
+        )[::-1]
         # 16 points around the midpoint
         idxs = slice(self._zaidx-8, self._zaidx+8)
         # idxs = [self._zaidx] # single point solver
@@ -498,10 +500,16 @@ def run_glow_fit(
                     br_diff = ((perf[0] - perf[1]) / perf[1]  # type: ignore
                                ) * 100  # type: ignore
                     br_diff_str = '%+.2f' % (br_diff)
-                    pbar.set_description(
-                        # type: ignore
-                        # type: ignore
-                        f'[{fp[0]:.2f} {fp[1]:.2f} {fp[2]:.2f} {fp[3]:.2f} {fp[4]:.2f} {fp[5]:.2f}] ({perf[1]:.2e}){br_diff_str}% | {perf[2]:.2f}<->{perf[3]:.2f} ({failed}) ', refresh=True)
+                    if fp is not None:
+                        pbar.set_description(
+                            f'[{fp[0]:.2f} {fp[1]:.2f} {fp[2]:.2f} {fp[3]:.2f} {fp[4]:.2f} {fp[5]:.2f}] ({perf[1]:.2e}){br_diff_str}% | {perf[2]:.2f}<->{perf[3]:.2f} ({failed}) ',
+                            refresh=True,
+                        )
+                    else:
+                        pbar.set_description(
+                            f'([FAILED] ({failed})',
+                            refresh=True,
+                        )
                     out = minf.emission
                     br5577[idx, :] += out[0]
                     br6300[idx, :] += out[1]

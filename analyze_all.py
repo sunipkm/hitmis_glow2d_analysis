@@ -4,12 +4,13 @@ from datetime import datetime, timedelta
 import lzma
 import os
 import pickle
-from typing import List, SupportsFloat as Numeric
+from typing import List, Optional, SupportsFloat as Numeric
 
 from matplotlib import pyplot as plt, ticker
 import matplotlib
 from matplotlib.axes import Axes
 from matplotlib.gridspec import GridSpec
+import natsort
 import numpy as np
 import pandas as pd
 import pytz
@@ -24,42 +25,50 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # %%
 
 
-def init(run=False) -> List[str]:
+def init(suffix: str, run=False) -> List[str]:
     """Populate the directories with the required results.
 
     Returns:
         List[str]: A list of valid suffixes for the directories.
     """
-    valid_suffixes = []
-    for idx in range(16):
-        suffix = f'randinit_run{idx}'
-        dirname = ROOT_DIR / f'keomodel_{suffix}'
-        if dirname.exists():
-            if run:
-                print(f'Running fit_den for {suffix}')
-                os.system(f'python fit_den.py {suffix}')
-                print(f'Running fit_loc for {suffix}')
-                os.system(f'python fit_loc.py {suffix}')
-                print(f'Running fit_tec for {suffix}')
-                os.system(f'python fit_tec.py {suffix}')
-            valid_suffixes.append(suffix)
-    return valid_suffixes
+    dirs = list(ROOT_DIR.glob(f'keomodel_{suffix}*'))
+    suffixes = [d.name.split('_', 1)[-1] for d in dirs]
+    suffixes = natsort.natsorted(suffixes)
+    if run:
+        for suff in suffixes:
+            dirname = ROOT_DIR / f'keomodel_{suff}'
+            if not dirname.exists():
+                print(f'[ERROR] {dirname} does not exist. Skipping.')
+                continue
+            print(f'Running generate_vert for {suff}')
+            os.system(f'python generate_vert.py {suff}')
+            print(f'Running fit_den for {suff}')
+            os.system(f'python fit_den.py {suff}')
+            print(f'Running fit_loc for {suff}')
+            os.system(f'python fit_loc.py {suff}')
+            print(f'Running fit_tec for {suff}')
+            os.system(f'python fit_tec.py {suff}')
+
+    return suffixes
 
 
 # %%
-suffixes = init()
+suffixes = init('newmodel')
 # %%
 
 
-def compile_tec_corr(suffixes: List[str]) -> None:
+def compile_tec_corr(suffixes: List[str], base_suffix: Optional[str] = None) -> None:
     digi_base = dict()
     gps_base = dict()
     digi_gmean = dict()
     gps_gmean = dict()
     digi_corrs = dict()
     gps_corrs = dict()
+    if base_suffix is None:
+        fname = ROOT_DIR / 'fitprops' / 'tec_correlation.csv'
+    else:
+        fname = ROOT_DIR / f'fitprops_{base_suffix}' / 'tec_correlation.csv'
 
-    fname = ROOT_DIR / 'fitprops' / 'tec_correlation.csv'
     if fname.exists():
         with open(fname, 'r') as f:
             lines = f.readlines()[1:]  # skip header
@@ -89,8 +98,10 @@ def compile_tec_corr(suffixes: List[str]) -> None:
                 gps_corrs[line[0]].append(float(line[2]))
     if keys is not None:
         for key in keys:
-            digi_gmean[key] = np.nanmean(digi_corrs[key]) # scipy.stats.mstats.gmean(digi_corrs[key])
-            gps_gmean[key] = np.nanmean(gps_corrs[key]) # scipy.stats.mstats.gmean(gps_corrs[key])
+            # scipy.stats.mstats.gmean(digi_corrs[key])
+            digi_gmean[key] = np.nanmean(digi_corrs[key])
+            # scipy.stats.mstats.gmean(gps_corrs[key])
+            gps_gmean[key] = np.nanmean(gps_corrs[key])
 
     header = ['Date', 'B'] + \
         [f'R{i}' for i in range(1, len(suffixes) + 1)] + ['Mean']
@@ -103,13 +114,18 @@ def compile_tec_corr(suffixes: List[str]) -> None:
     with open('tec_correlation_gps.csv', 'w') as f:
         f.write(','.join(header))
         for key in keys:
-            line = [key, gps_base[key]] + [gps_corrs[key][i]
-                                           for i in range(len(suffixes))] + [f'{gps_gmean[key]:.2f}']
+            line = [
+                key, gps_base[key]] + [
+                    gps_corrs[key][i]
+                for i in range(len(suffixes))
+            ] + [
+                f'{gps_gmean[key]:.2f}'
+            ]
             f.write('\n' + ','.join(map(str, line)))
     with open('tec_correlation_table.tex', 'w') as f:
         header.insert(1, 'Source')
         f.write(
-rf"""\small
+            rf"""\small
 \begin{{tabular}}{{{"c"*(len(header))}}}
 \hline
 {" & ".join(header)} \\
@@ -118,10 +134,12 @@ rf"""\small
 """
         )
         for key in keys:
-            l1 = ['Digisonde', rf'{digi_base[key]:.0f}\%'] + [rf'{digi_corrs[key][i]:.0f}\%' for i in range(len(suffixes))] + [rf'{digi_gmean[key]:.0f}\%']
-            l2 = ['GPS', rf'{gps_base[key]:.0f}\%'] + [rf'{gps_corrs[key][i]:.0f}\%' for i in range(len(suffixes))] + [rf'{gps_gmean[key]:.0f}\%']
+            l1 = ['Digisonde', rf'{digi_base[key]:.0f}\%'] + [
+                rf'{digi_corrs[key][i]:.0f}\%' for i in range(len(suffixes))] + [rf'{digi_gmean[key]:.0f}\%']
+            l2 = ['GPS', rf'{gps_base[key]:.0f}\%'] + [rf'{gps_corrs[key][i]:.0f}\%' for i in range(
+                len(suffixes))] + [rf'{gps_gmean[key]:.0f}\%']
             f.write(
-rf"""\multirow{{2}}{{*}}{{{key}}} & {' & '.join(l1)} \\
+                rf"""\multirow{{2}}{{*}}{{{key}}} & {' & '.join(l1)} \\
     & {' & '.join(l2)} \\
 \hline
 """
@@ -130,13 +148,17 @@ rf"""\multirow{{2}}{{*}}{{{key}}} & {' & '.join(l1)} \\
 
 
 # %%
-compile_tec_corr(suffixes)
+compile_tec_corr(suffixes[1:], base_suffix=suffixes[0])
 # %%
 
 
-def compile_density_stats(suffixes: List[str]):
-    msuffixes = [None] + suffixes  # Add None for the base case
-    dates = list(map(get_date, (ROOT_DIR / 'keomodel').glob('fitres*.xz')))
+def compile_density_stats(suffixes: List[str], base_suffix: Optional[str] = None):
+    if base_suffix is not None:
+        msuffixes = [base_suffix] + suffixes
+    else:
+        msuffixes = [None] + suffixes
+    dates = list(map(get_date, (ROOT_DIR / 'keocounts').glob('*.nc')))
+    print(f'Found {len(dates)} dates to process.')
     dates.sort()
     stats = {}
     for date in tqdm.tqdm(dates, dynamic_ncols=True):
@@ -157,10 +179,16 @@ def compile_density_stats(suffixes: List[str]):
                         scales.append(
                             (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan))
                 scales = np.array(scales)
-                ds = xarray.DataArray(scales, dims=['tstamp', 'species'], coords={
-                                      'tstamp': tstamps, 'species': ['O', 'O2', 'N2', 'NO', 'N4S', 'e-']})
+                ds = xarray.DataArray(
+                    scales,
+                    dims=['tstamp', 'species'],
+                    coords={
+                        'tstamp': tstamps,
+                        'species': ['O', 'O2', 'N2', 'NO', 'N4S', 'e-']
+                    },
+                )
                 dss.append(ds)
-        dss = xarray.concat(dss, dim='suffix')
+        dss = xarray.concat(dss, dim='suffix', compat='equals')
         ds = xarray.Dataset({'density': dss})
         ds['minval'] = ds.density.min(dim='suffix')
         ds['maxval'] = ds.density.max(dim='suffix')
@@ -172,9 +200,10 @@ def compile_density_stats(suffixes: List[str]):
     return stats
 
 
-compiled_stats = compile_density_stats(suffixes)
+compiled_stats = compile_density_stats(suffixes[1:], base_suffix=suffixes[0])
 
 # %%
+
 
 def plot_density_stat(stats):
     num_rows = len(stats) // 2
@@ -220,7 +249,6 @@ def plot_density_stat(stats):
     dates = list(stats.keys())
     dates.sort()
     with open('fit_den_stats.csv', 'w') as csvhandle, open('fit_den_stats.tex', 'w') as texhandle:
-
         for idx, (date, ax) in enumerate(zip(dates, axes.flatten())):
             ax: Axes = ax
             ds = stats[date]
@@ -228,8 +256,10 @@ def plot_density_stat(stats):
             tstamps = [pd.to_datetime(t).to_pydatetime().astimezone(
                 pytz.timezone('US/Eastern')) for t in ttstamps]
             start = tstamps[0]
-            start = datetime(start.year, start.month,
-                            start.day, start.hour)
+            start = datetime(
+                start.year, start.month,
+                start.day, start.hour
+            )
             legends = []
             ltexts = []
             baseval = ds.loc[dict(suffix=0)]
@@ -252,8 +282,12 @@ def plot_density_stat(stats):
                 _, maxval, _ = fill_array_1d(maxval, tstamps)
                 tstamps, geomean, nanfill = fill_array_1d(
                     geomean, tstamps)  # type: ignore
-                ttstamps = np.asarray([t.timestamp()
-                                    for t in tstamps], dtype=float)
+                ttstamps = np.asarray(
+                    [
+                        t.timestamp() for t in tstamps
+                    ],
+                    dtype=float,
+                )
                 ttstamps -= start.timestamp()
                 ttstamps /= 3600  # convert to hours
                 assert len(ttstamps) == len(
@@ -267,7 +301,7 @@ def plot_density_stat(stats):
                 ax_xlim.append((ttstamps[0], ttstamps[-1]))
                 ax_ylim.append((np.nanmin(minval), np.nanmax(maxval)))
                 ax_ylim.append((np.nanmin(meanval - stdval),
-                            np.nanmax(meanval + stdval)))
+                                np.nanmax(meanval + stdval)))
                 legends.append((line, fill1))
                 ltexts.append(fr'[{lprops[sp]["label"]}]$\pm 1\sigma$')
             if not idx % 2 == 0:
@@ -308,12 +342,15 @@ def plot_density_stat(stats):
         res = ofst + x  # type: ignore
         return res.strftime('%H:%M')
 
-    fig.text(0.055, 0.5, 'Density Perturbation',
-             va='center', rotation='vertical')
+    fig.text(
+        0.055, 0.5, 'Density Perturbation',
+        va='center', rotation='vertical'
+    )
 
     for ax in axes.flatten()[-2:]:
         xticks = np.asarray(ax.get_xticks())
         xticks = np.round(xticks, decimals=1)
+        # type: ignore
         # type: ignore
         xticks = list(map(lambda x: fmt_time(x, start), xticks)) # type: ignore
         ax.set_xticklabels(xticks, rotation=45)
@@ -321,9 +358,12 @@ def plot_density_stat(stats):
 
     # for (line, text) in zip(legends, ltexts):
     #     print(line, text)
-    lax.legend(legends, ltexts, loc='center', fontsize=6, frameon=False, ncol=len(ltexts), mode='expand') # type: ignore
+    lax.legend(
+        legends, ltexts, loc='center', fontsize=6, # type: ignore
+        frameon=False, ncol=len(ltexts), mode='expand' # type: ignore
+    )  # type: ignore
     # draw_vertical_legend(lax, items=legends, texts=ltexts, fontsize=6)
-    fig.savefig(ROOT_DIR / 'density_stats_multirun.pdf',
+    fig.savefig(ROOT_DIR / 'density_stats_multirun.png',
                 dpi=600, bbox_inches='tight')
     fig.show()
 

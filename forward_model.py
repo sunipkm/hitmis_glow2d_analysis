@@ -33,7 +33,14 @@ za_max = sds['za_max'].values
 
 
 class GLOWFwd:
-    def __init__(self, time: dt.datetime, lat: Numeric, lon: Numeric, heading: Numeric, geomag_params: Dict[str, Numeric], za_min: np.ndarray, za_max: np.ndarray, za_idx: int, tec: xr.Dataset, m_pool=None):
+    def __init__(
+            self,
+            time: dt.datetime, lat: Numeric, lon: Numeric, heading: Numeric,
+            geomag_params: Dict[str, Numeric],
+            za_min: np.ndarray, za_max: np.ndarray, za_idx: int,
+            tec: xr.Dataset, m_pool=None,
+            newmodel: bool = False
+    ):
         self._time = time
         self._lat = lat
         self._lon = lon
@@ -45,7 +52,12 @@ class GLOWFwd:
         self._bright = None
         self._pool = m_pool
         self._tec = tec
-
+        if newmodel:
+            self._magmodel = 'IGRF14'
+            self._version = 'MSIS21_IRI20'
+        else:
+            self._magmodel = 'POGO68'
+            self._version = 'MSIS00_IRI90'
         self._update()
 
     @property
@@ -59,21 +71,31 @@ class GLOWFwd:
     def _update(self):
         iono = glow2d.polar_model(
             self._time, self._lat, self._lon, self._heading, n_pts=20,
-            geomag_params=self._geopar, tec=self._tec, mpool=self._pool
+            kwargs=dict(
+                geomag_params=self._geopar,
+                magmodel=self._magmodel,
+                version=self._version
+            ),
+            tec=self._tec,
+            mpool=self._pool
         )  # type: ignore
         self._tecscale = iono['tecscale'].copy()  # type: ignore
-        ec5577 = glow2d.glow2d_polar.get_emission(  # type: ignore
-            # type: ignore
-            iono, feature='5577', za_min=self._zamin, za_max=self._zamax)[::-1]
-        ec6300 = glow2d.glow2d_polar.get_emission(  # type: ignore
-            # type: ignore
-            iono, feature='6300', za_min=self._zamin, za_max=self._zamax)[::-1]
+        ec5577 = glow2d.glow2d_polar.get_emission(
+            iono,  # type: ignore
+            feature='5577',
+            za_min=self._zamin, za_max=self._zamax
+        )[::-1]
+        ec6300 = glow2d.glow2d_polar.get_emission(
+            iono,  # type: ignore
+            feature='6300',
+            za_min=self._zamin, za_max=self._zamax
+        )[::-1]
         self._bright = [ec5577[::-1], ec6300[::-1]]
 
 
 # %%
 # dates = ['20220209']
-def runner(model_dir: Path, counts_dir: Path):
+def runner(model_dir: Path, counts_dir: Path, newmodel: bool = False):
     tec = xr.open_dataset(ROOT_DIR / 'gpstec_lowell.nc')
     with Pool(6) as m_pool:
         dates = [
@@ -114,15 +136,17 @@ def runner(model_dir: Path, counts_dir: Path):
 
             for idx in pbar:
                 geomag_params = {
-                    'ap': float(ap[idx]),
+                    'Ap': float(ap[idx]),
                     'f107': float(f107[idx]),
                     'f107a': float(f107a[idx]),
                     'f107p': float(f107p[idx]),
                 }
                 minf = GLOWFwd(
-                    # type: ignore
-                    tstamps[idx], lat, lon, 40, geomag_params=geomag_params, za_min=za_min,
-                    za_max=za_max, za_idx=za_idx, tec=tec, m_pool=m_pool
+                    tstamps[idx], lat, lon, 40,
+                    geomag_params=geomag_params,  # type: ignore
+                    za_min=za_min, za_max=za_max,
+                    za_idx=za_idx, tec=tec,
+                    m_pool=m_pool, newmodel=newmodel
                 )
                 out = minf.emission
                 br5577[idx, :] += out[0]  # type: ignore
@@ -165,7 +189,20 @@ def runner(model_dir: Path, counts_dir: Path):
 
 # %%
 if not is_interactive_session():
-    dirs = Directories()
-    model_dir = dirs.model_dir
-    counts_dir = dirs.counts_dir
-    runner(model_dir, counts_dir)
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='Generate vertical profiles from fitres files.')
+    parser.add_argument('suffix', type=str, default=None, nargs='?',
+                        help='Suffix for the output files.')
+    parser.add_argument('--newmodel', action='store_true',
+                        help='Use new model settings.')
+    args = parser.parse_args()
+    suffix = args.suffix.strip() if args.suffix is not None else None
+    print(
+        f'Processing suffix: {suffix}, newmodel={args.newmodel}')
+    dirs = Directories(suffix=suffix)
+    runner(
+        dirs.model_dir,
+        dirs.counts_dir,
+        newmodel=args.newmodel
+    )

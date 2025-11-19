@@ -30,7 +30,8 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
     with lzma.open(file, 'rb') as f:
         fitres = pickle.load(f)
     tstamps = [x[0] for x in fitres]
-    ttstamps = [pd.to_datetime(t).to_pydatetime().astimezone(pytz.utc) for t in tstamps]
+    ttstamps = [pd.to_datetime(t).to_pydatetime(
+    ).astimezone(pytz.utc) for t in tstamps]
     start = pd.to_datetime(
         tstamps[0]).to_pydatetime()
     end = pd.to_datetime(
@@ -54,8 +55,10 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
     tstamps = tstamps.astype(float)
     tstamps *= 1e-9  # convert to seconds
     sstart = dt.datetime.fromtimestamp(tstamps[0])  # start
-    sstart = dt.datetime(sstart.year, sstart.month,
-                         sstart.day, sstart.hour, 0, 0)
+    sstart = dt.datetime(
+        sstart.year, sstart.month,
+        sstart.day, sstart.hour, 0, 0
+    )
     tstamps -= sstart.timestamp()
     sstart = sstart.astimezone(pytz.utc)
     """Density perturbations of O, O2, N2, NO, N(4S), N(2D) and e-
@@ -71,15 +74,18 @@ def generate_vert(output: Path, date: str, file: Path, fhandles: Optional[Tuple[
         den_no), np.nanmin(den_no), np.nanmax(den_no))
     stats['N4S'] = (np.nanmean(den_n4s), np.nanstd(den_n4s), np.nanmedian(
         den_n4s), np.nanmin(den_n4s), np.nanmax(den_n4s))
-    stats['e-'] = (np.nanmean(den_e), np.nanstd(den_e),
-                   np.nanmedian(den_e), np.nanmin(den_e), np.nanmax(den_e))
+    stats['e-'] = (
+        np.nanmean(den_e), np.nanstd(den_e),
+        np.nanmedian(den_e), np.nanmin(den_e), np.nanmax(den_e)
+    )
     _, den_o, _ = fill_array_1d(den_o, ttstamps)  # type: ignore
     _, den_o2, _ = fill_array_1d(den_o2, ttstamps)  # type: ignore
     _, den_n2, _ = fill_array_1d(den_n2, ttstamps)  # type: ignore
     _, den_no, _ = fill_array_1d(den_no, ttstamps)  # type: ignore
     _, den_n4s, _ = fill_array_1d(den_n4s, ttstamps)  # type: ignore
     ttstamps, den_e, _ = fill_array_1d(den_e, ttstamps)  # type: ignore
-    tstamps = list(map(lambda t: (t - sstart).total_seconds() / 3600, ttstamps))
+    tstamps = list(
+        map(lambda t: (t - sstart).total_seconds() / 3600, ttstamps))
     tstamps = np.asarray(tstamps, dtype=float)
     # tstamps /= 3600  # convert to hours
     fig = plt.figure(figsize=(4.8, 3), dpi=300)

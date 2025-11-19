@@ -1,6 +1,7 @@
 # %% Imports
 from __future__ import annotations
 import datetime as dt
+from pathlib import Path
 from typing import List, SupportsFloat as Numeric
 from matplotlib.axes import Axes
 from matplotlib.gridspec import GridSpec
@@ -21,7 +22,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning)
 # %% Directories
-dirsettings = Directories()
+dirsettings = Directories(suffix='newmodel_0')
 COUNTS_DIR = dirsettings.counts_dir
 MODEL_DIR = dirsettings.model_dir
 KEOGRAMS_DIR = dirsettings.keograms_dir
@@ -35,38 +36,40 @@ za_max = sds['za_max'].values
 
 
 def fmt_time(x: Numeric, ofst: dt.datetime) -> str:
-    x = dt.timedelta(hours=x) # type: ignore
-    res = ofst + x # type: ignore
+    x = dt.timedelta(hours=x)  # type: ignore
+    res = ofst + x  # type: ignore
     return res.strftime('%H:%M')
 
 
 # %% Keogram
 za_idx = 20
 
-dates = ['20220126', '20220209', '20220215', '20220218',
-         '20220219', '20220226', '20220303', '20220304']
+dates = [
+    '20220126', '20220209', '20220215', '20220218',
+    '20220219', '20220226', '20220303', '20220304'
+]
 # %%
 za_idx = 20
 
 num_rows = int(np.floor(len(dates) / 2))  # 2 columns
-gspec = GridSpec(num_rows + 2, 2, hspace=0.075, wspace=0.04,
-                     height_ratios=[0.055] + [0.055] + [1] * num_rows)
+gspec = GridSpec(num_rows + 1, 2, hspace=0.075, wspace=0.04,
+                 height_ratios=[0.11] + [1] * num_rows)
 fig = plt.figure(figsize=(4.8, 1.75*num_rows), dpi=300)
 lax_g = fig.add_subplot(gspec[0, :])
 lax_g.set_axis_off()
-lax_r = fig.add_subplot(gspec[1, :])
-lax_r.set_axis_off()
+# lax_r = fig.add_subplot(gspec[1, :])
+# lax_r.set_axis_off()
 axes_list: List[List[Axes]] = []
 for i in range(num_rows):
     axes_list.append([])
     for j in range(2):
         if i == 0:
-            ax = fig.add_subplot(gspec[i + 2, j])
+            ax = fig.add_subplot(gspec[i + 1, j])
         else:
             ax = fig.add_subplot(
-                gspec[i + 2, j], sharex=axes_list[0][j], sharey=axes_list[0][j])
+                gspec[i + 1, j], sharex=axes_list[0][j], sharey=axes_list[0][j])
         axes_list[i].append(ax)
-axes = np.asarray(axes_list, dtype=Axes) # type: ignore
+axes = np.asarray(axes_list, dtype=Axes)  # type: ignore
 # fig, axes = plt.subplots(num_rows, 2, figsize=(
 #     4.8, 2*num_rows), sharex=True, sharey=True, dpi=300)
 # fig.subplots_adjust(hspace=0, wspace=0.1)
@@ -85,6 +88,8 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     ds = xr.load_dataset(COUNTS_DIR / f'hitmis_cts_{date}.nc')
     mds = xr.load_dataset(MODEL_DIR / f'keofit_{date}.nc')
     fds = xr.load_dataset(MODEL_DIR / f'fwdmodel_{date}.nc')
+    fds_old = xr.load_dataset(
+        Path('_keomodel_oldmodel') / f'fwdmodel_{date}.nc')
     ds = ds.loc[dict(tstamp=mds.tstamp.values)]
     tstamps = ds.tstamp.values
     if (len(tstamps) == 0):
@@ -107,22 +112,26 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     mds_6300 = mds['6300'].values.T[::-1, :] / dheight * 4*np.pi*1e-6
     fds_5577 = fds['5577'].values.T[::-1, :] / dheight * 4*np.pi*1e-6
     fds_6300 = fds['6300'].values.T[::-1, :] / dheight * 4*np.pi*1e-6
+    fds_old_5577 = fds_old['5577'].values.T[::-1, :] / dheight * 4*np.pi*1e-6
+    fds_old_6300 = fds_old['6300'].values.T[::-1, :] / dheight * 4*np.pi*1e-6
     try:
         mds_ap = mds['ap'].values
     except Exception:
         continue
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
-    _, imgs_5577, _ = fill_array(imgs_5577, tstamps) # type: ignore
-    _, stds_5577, _ = fill_array(stds_5577, tstamps) # type: ignore
-    _, imgs_6300, _ = fill_array(imgs_6300, tstamps) # type: ignore
-    _, stds_6300, _ = fill_array(stds_6300, tstamps) # type: ignore
-    _, imgs_6306, _ = fill_array(imgs_6306, tstamps) # type: ignore
-    _, stds_6306, _ = fill_array(stds_6306, tstamps) # type: ignore
-    _, mds_5577, _ = fill_array(mds_5577, tstamps) # type: ignore
-    _, mds_ap, _ = fill_array(mds_ap[:, None], tstamps, axis=0) # type: ignore
-    _, mds_6300, _ = fill_array(mds_6300, tstamps) # type: ignore
-    _, fds_5577, _ = fill_array(fds_5577, tstamps) # type: ignore
-    tstamps, fds_6300, _ = fill_array(fds_6300, tstamps) # type: ignore
+    _, imgs_5577, _ = fill_array(imgs_5577, tstamps)  # type: ignore
+    _, stds_5577, _ = fill_array(stds_5577, tstamps)  # type: ignore
+    _, imgs_6300, _ = fill_array(imgs_6300, tstamps)  # type: ignore
+    _, stds_6300, _ = fill_array(stds_6300, tstamps)  # type: ignore
+    _, imgs_6306, _ = fill_array(imgs_6306, tstamps)  # type: ignore
+    _, stds_6306, _ = fill_array(stds_6306, tstamps)  # type: ignore
+    _, mds_5577, _ = fill_array(mds_5577, tstamps)  # type: ignore
+    _, mds_ap, _ = fill_array(mds_ap[:, None], tstamps, axis=0)  # type: ignore
+    _, mds_6300, _ = fill_array(mds_6300, tstamps)  # type: ignore
+    _, fds_5577, _ = fill_array(fds_5577, tstamps)  # type: ignore
+    _, fds_old_5577, _ = fill_array(fds_old_5577, tstamps)  # type: ignore
+    _, fds_old_6300, _ = fill_array(fds_old_6300, tstamps)  # type: ignore
+    tstamps, fds_6300, _ = fill_array(fds_6300, tstamps)  # type: ignore
     # _, mds_6306, _ = fill
     # _, mds_ap, _, _, _ = get_smoothed_geomag(tstamps)
 
@@ -160,17 +169,36 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     # l_ap, = tax.plot(ttstamps, mds_ap, ls='-.', color='k', lw=0.65)
     ax.set_yscale('log')
     # ax.yaxis.set_major_formatter(ticker.ScalarFormatter('%.0f'))
-    l_55, = ax.plot(ttstamps, imgs_5577[za_idx, :], ls=':', lw=0.65, color='forestgreen')
-    m_55, = ax.plot(ttstamps, mds_5577[za_idx, :], ls='-', lw=0.65, color='forestgreen')
-    s_55, = ax.plot(ttstamps, fds_5577[za_idx, :], ls='--', lw=0.65, color='forestgreen')
+    l_55, = ax.plot(
+        ttstamps, imgs_5577[za_idx, :], ls=':', lw=0.65, color='forestgreen')
+    m_55, = ax.plot(
+        ttstamps, mds_5577[za_idx, :],
+        ls='-', lw=0.65, color='forestgreen'
+    )
+    s_55, = ax.plot(
+        ttstamps, fds_5577[za_idx, :],
+        ls='--', lw=0.65, color='forestgreen'
+    )
     l_63, = ax.plot(ttstamps, imgs_6300[za_idx, :], ls=':', lw=0.65, color='r')
     m_63, = ax.plot(ttstamps, mds_6300[za_idx, :], ls='-', lw=0.65, color='r')
     s_63, = ax.plot(ttstamps, fds_6300[za_idx, :], ls='--', lw=0.65, color='r')
+    s_55_old, = ax.plot(
+        ttstamps, fds_old_5577[za_idx, :],
+        ls='-.', lw=0.65, color='forestgreen', alpha=0.75
+    )
+    s_63_old, = ax.plot(
+        ttstamps, fds_old_6300[za_idx, :],
+        ls='-.', lw=0.65, color='r', alpha=0.75
+    )
     # ax.plot(ttstamps, imgs_6306[za_idx, :], ls='-', lw=0.65, color='k')
-    f_55 = ax.fill_between(ttstamps, imgs_5577[za_idx, :] + 1*stds_5577[za_idx, :],
-                           imgs_5577[za_idx, :] - 1*stds_5577[za_idx, :], alpha=0.4, color='forestgreen', edgecolor=None)
-    f_63 = ax.fill_between(ttstamps, imgs_6300[za_idx, :] + 1*stds_6300[za_idx, :],
-                           imgs_6300[za_idx, :] - 1*stds_6300[za_idx, :], alpha=0.25, color='r', edgecolor=None)
+    f_55 = ax.fill_between(
+        ttstamps, imgs_5577[za_idx, :] + 1*stds_5577[za_idx, :],
+        imgs_5577[za_idx, :] - 1*stds_5577[za_idx, :], alpha=0.4, color='forestgreen', edgecolor=None
+    )
+    f_63 = ax.fill_between(
+        ttstamps, imgs_6300[za_idx, :] + 1*stds_6300[za_idx, :],
+        imgs_6300[za_idx, :] - 1*stds_6300[za_idx, :], alpha=0.25, color='r', edgecolor=None
+    )
     # f_55 = ax.fill_between(ttstamps, imgs_5577[za_idx, :] + 2*stds_5577[za_idx, :],
     #                        imgs_5577[za_idx, :] - 2*stds_5577[za_idx, :], alpha=0.25, color='forestgreen', edgecolor=None)
     # f_63 = ax.fill_between(ttstamps, imgs_6300[za_idx, :] + 2*stds_6300[za_idx, :],
@@ -180,26 +208,36 @@ for fidx, (date, ax) in enumerate(zip(dates, axes.flatten())):
     if not fidx % 2 == 0:
         ax.yaxis.set_ticks_position('none')
         plt.setp(ax.get_yticklabels(), visible=False)
-    lobjs_g = [(l_55, f_55), s_55, m_55]
-    lobjs_r = [(l_63, f_63), s_63, m_63]  # , l_ap]
+    lobjs_g = [(l_55, f_55), s_55, s_55_old, m_55]  # , l_ap    ]
+    lobjs_r = [(l_63, f_63), s_63, s_63_old, m_63]  # , l_ap]
     ltext_g = [
-        '5577Å Measurement', '5577Å Forward Model', '5577Å Fitting'
+        '5577Å Measurement',
+        '5577Å MSIS-2.1+IRI-20',
+        '5577Å MSIS-00+IRI-90',
+        '5577Å Fit'
     ]
     ltext_r = [
-        '6300Å Measurement', '6300Å Forward Model', '6300Å Fitting'
+        '6300Å Measurement',
+        '6300Å MSIS-2.1+IRI-20',
+        '6300Å MSIS-00+IRI-90',
+        '6300Å Fit'
     ]
     if nanfill:
         tmin = nanloc[0] - 1
         tmax = nanloc[-1] + 1
         trange = np.asarray(ttstamps)[tmin:tmax + 1]
-        nfb = ax.fill_between(trange, 1e-4, 1e8, color='k',
-                              alpha=0.2, edgecolor=None)
+        nfb = ax.fill_between(
+            trange, 1e-4, 1e8, color='k',
+            alpha=0.2, edgecolor=None
+        )
         datagaps[fidx] = (trange.mean(),)
         # lobjs.append(nfb)
         # ltext.append('Data Unavailable')
     ax.set_ylim(ylim)
-    ax.text(0.5, 0.99, start.strftime('%Y-%m-%d'),
-            ha='center', va='top', transform=ax.transAxes)
+    ax.text(
+        0.5, 0.99, start.strftime('%Y-%m-%d'),
+        ha='center', va='top', transform=ax.transAxes
+    )
 
     data_max.append(
         max(
@@ -236,7 +274,7 @@ for idx, ax in enumerate(axes.flatten()):
 for k, v in datagaps.items():
     ax = axes.flatten()[k]
     ylim = ax.get_ylim()
-    ax.text(v[0], np.mean(ylim), 'Data Unavailable', ha='center', # type: ignore
+    ax.text(v[0], np.mean(ylim), 'Data Unavailable', ha='center',  # type: ignore
             va='top', fontsize=8, color='r', rotation='vertical')
 
 for ax in axes.flatten()[-2:]:
@@ -249,11 +287,45 @@ for ax in axes.flatten()[:-2]:
     # ax.xaxis.set_ticks_position('none')
     plt.setp(ax.get_xticklabels(), visible=False)
 
-fig.text(0.03, 0.5, 'Intensity (R)',
-             va='center', rotation='vertical')
-lax_g.legend(lobjs_g, ltext_g, loc='center', fontsize=7, frameon=False, ncol=len(ltext_g), mode='expand') # type: ignore
-lax_r.legend(lobjs_r, ltext_r, loc='center', fontsize=7, frameon=False, ncol=len(ltext_r), mode='expand') # type: ignore
-fig.savefig(f'{KEOGRAMS_DIR}/keo_fit_lowell.pdf', dpi=600, bbox_inches='tight')
+fig.text(
+    0.03, 0.5, 'Intensity (R)',
+    va='center', rotation='vertical'
+)
+
+# Legend stuff
+if True:
+    ax = axes.flatten()[0]
+    # ax.yaxis.set_major_formatter(ticker.ScalarFormatter('%.0f'))
+    l_55, = ax.plot(
+        [], [], ls=':', lw=0.65, color='k')
+    m_55, = ax.plot(
+        [], [],
+        ls='-', lw=0.65, color='k'
+    )
+    s_55, = ax.plot(
+        [], [],
+        ls='--', lw=0.65, color='k'
+    )
+    s_55_old, = ax.plot(
+        [], [],
+        ls='-.', lw=0.65, color='k', alpha=0.75
+    )
+    # ax.plot(ttstamps, imgs_6306[za_idx, :], ls='-', lw=0.65, color='k')
+    f_55 = ax.fill_between(
+        [], [], [], alpha=0.4, color='k', edgecolor=None
+    )
+    tlines = [(l_55, f_55), m_55, s_55, s_55_old]  # , l_ap    ]
+    ltext = [
+        'Measurement',
+        'MSIS-2.1+IRI-20 Fit',
+        'MSIS-2.1+IRI-20',
+        'MSIS-00+IRI-90',
+    ]
+    lax_g.legend(
+        tlines, ltext, loc='center', fontsize=7,  # type:
+        frameon=False, ncol=len(ltext) // 2, mode='expand'  # type: ignore
+    )
+fig.savefig(f'{KEOGRAMS_DIR}/keo_fit_lowell.png', dpi=600, bbox_inches='tight')
 plt.show()
 # %% All images in one
 ax_xlim = []
@@ -268,8 +340,13 @@ for i in range(num_rows):
     axs.append([])
     axs[i].append(fig.add_subplot(
         inner[i, 0], sharex=axs[0][0] if i > 0 else None))
-    axs[i].append(fig.add_subplot(inner[i, 1], sharex=axs[0]
-                  [1] if i > 0 else None, sharey=axs[i][0]))
+    axs[i].append(
+        fig.add_subplot(
+            inner[i, 1],
+            sharex=axs[0][1] if i > 0 else None,
+            sharey=axs[i][0]
+        )
+    )
     fig.add_subplot(axs[i][0])
     fig.add_subplot(axs[i][1])
 # axs = np.asarray(axs).flatten().reshape((2, num_rows)).T
@@ -306,12 +383,12 @@ for fidx, (date, ax) in enumerate(zip(dates, axs)):
     mds_6300 = mds['6300'].values.T[::-1, :] / dheight * 4*np.pi*1e-6
     tstamps = list(map(lambda t: pd.to_datetime(t).to_pydatetime(), tstamps))
     dds = di.get_indices(tstamps, 'MHJ45')
-    _, imgs_5577, _ = fill_array(imgs_5577, tstamps) # type: ignore
-    _, stds_5577, _ = fill_array(stds_5577, tstamps) # type: ignore
-    _, imgs_6300, _ = fill_array(imgs_6300, tstamps) # type: ignore
-    _, stds_6300, _ = fill_array(stds_6300, tstamps) # type: ignore
-    _, mds_5577, _ = fill_array(mds_5577, tstamps) # type: ignore
-    tstamps, mds_6300, _ = fill_array(mds_6300, tstamps) # type: ignore
+    _, imgs_5577, _ = fill_array(imgs_5577, tstamps)  # type: ignore
+    _, stds_5577, _ = fill_array(stds_5577, tstamps)  # type: ignore
+    _, imgs_6300, _ = fill_array(imgs_6300, tstamps)  # type: ignore
+    _, stds_6300, _ = fill_array(stds_6300, tstamps)  # type: ignore
+    _, mds_5577, _ = fill_array(mds_5577, tstamps)  # type: ignore
+    tstamps, mds_6300, _ = fill_array(mds_6300, tstamps)  # type: ignore
 
     start = tstamps[0].astimezone(pytz.timezone('US/Eastern'))
     start = pd.to_datetime(start).round('1h').to_pydatetime()
@@ -336,53 +413,67 @@ for fidx, (date, ax) in enumerate(zip(dates, axs)):
 
     def fmt2(x, pos=None):
         return r'${}^\circ$'.format(x)
-    
+
     def fmt3(x, pos=None):
         return ''
-    
-    ax[0].yaxis.set_major_formatter(fmt2) # type: ignore
-    ax[0].locator_params(axis='y', nbins=3) # type: ignore
+
+    ax[0].yaxis.set_major_formatter(fmt2)  # type: ignore
+    ax[0].locator_params(axis='y', nbins=3)  # type: ignore
     # ax[0].set_ylabel('Elevation')
-    plt.setp(ax[1].get_yticklabels(), visible=False) # type: ignore
-    ax[1].yaxis.set_ticks_position('none') # type: ignore
+    plt.setp(ax[1].get_yticklabels(), visible=False)  # type: ignore
+    ax[1].yaxis.set_ticks_position('none')  # type: ignore
     if fidx == 0:
-        [ax[i].set_title(wl) for i, wl in enumerate( # type: ignore
+        [ax[i].set_title(wl) for i, wl in enumerate(  # type: ignore
             ('5577 Å (Green)', '6300 Å (Red)'))]
     if fidx != num_rows - 1:
-        ax[0].xaxis.set_ticks_position('none') # type: ignore
-        ax[1].xaxis.set_ticks_position('none') # type: ignore
-        plt.setp(ax[0].get_xticklabels(), visible=False) # type: ignore
-        plt.setp(ax[1].get_xticklabels(), visible=False) # type: ignore
+        ax[0].xaxis.set_ticks_position('none')  # type: ignore
+        ax[1].xaxis.set_ticks_position('none')  # type: ignore
+        plt.setp(ax[0].get_xticklabels(), visible=False)  # type: ignore
+        plt.setp(ax[1].get_xticklabels(), visible=False)  # type: ignore
 
-    im = ax[0].contourf(tx, hy, (imgs_5577 - mds_5577) / np.nanmax(stds_5577[za_idx, :]), # type: ignore
-                        aspect='auto',
-                        cmap='PiYG_r',
-                        levels=np.linspace(-4, 4, 17, endpoint=True),
-                        extend='both')
+    im = ax[0].contourf(  # type: ignore
+        tx, hy, (imgs_5577 - mds_5577) /
+        np.nanmax(stds_5577[za_idx, :]),  # type: ignore
+        aspect='auto',
+        cmap='PiYG_r',
+        levels=np.linspace(-4, 4, 17, endpoint=True),
+        extend='both'
+    )
 
-    im = ax[1].contourf(tx, hy, (imgs_6300 - mds_6300) / np.nanpercentile(stds_6300[za_idx, :], 99.9), # type: ignore
-                        aspect='auto',
-                        cmap='PiYG_r',
-                        levels=np.linspace(-4, 4, 17, endpoint=True),
-                        extend='both')
+    im = ax[1].contourf(  # type: ignore
+        tx, hy, (imgs_6300 - mds_6300) /
+        np.nanpercentile(stds_6300[za_idx, :], 99.9),  # type: ignore
+        aspect='auto',
+        cmap='PiYG_r',
+        levels=np.linspace(-4, 4, 17, endpoint=True),
+        extend='both'
+    )
 
     if nanfill:
         # 1. create axis
         tmin = nanloc[0] - 1
         tmax = nanloc[-1] + 1
         trange = np.asarray(ttstamps)[tmin:tmax + 1]
-        for axi in ax: # type: ignore
-            axi.fill_between(trange, height_ang[0] , height_ang[-1], color='k',
-                             alpha=0.2, edgecolor=None, hatch='//')
-            axi.text(trange.mean(), np.mean(height_ang),
-                     'Unavailable', ha='center', va='center', fontsize=6, rotation='vertical', color='r')
+        for axi in ax:  # type: ignore
+            axi.fill_between(
+                trange, height_ang[0], height_ang[-1], color='k',
+                alpha=0.2, edgecolor=None, hatch='//'
+            )
+            axi.text(
+                trange.mean(), np.mean(height_ang),
+                'Unavailable', ha='center', va='center',
+                fontsize=6, rotation='vertical', color='r'
+            )
     za_idx = 20
-    ax[0].axhline(35, color='k', ls='--', lw=0.5) # type: ignore
-    ax[1].axhline(35, color='k', ls='--', lw=0.5) # type: ignore
+    ax[0].axhline(35, color='k', ls='--', lw=0.5)  # type: ignore
+    ax[1].axhline(35, color='k', ls='--', lw=0.5)  # type: ignore
     ax_xlim.append((end - start).total_seconds() / 3600)
-    ax[1].text(1.075, 0.5, start.strftime('%Y-%m-%d'), # type: ignore
-               ha='right', va='center', transform=ax[1].transAxes, # type: ignore 
-               rotation=90, fontsize=8)
+    ax[1].text(  # type: ignore
+        1.075, 0.5, start.strftime('%Y-%m-%d'),
+        ha='right', va='center',
+        transform=ax[1].transAxes,  # type: ignore
+        rotation=90, fontsize=8
+    )
 
     # yticks = np.asarray(ax[0].get_yticks())
     # yticklabels = list(map(fmt2, yticks))
@@ -403,9 +494,13 @@ for idx, ax in enumerate(axs[-1, :]):
     #     xticks = xticks[1:]
     xticks = np.round(xticks, decimals=1)
     xticklabels = list(map(lambda x: fmt_time(x, start), xticks))
-    ax.set_xticks(xticks, labels=xticklabels, rotation=45, ha='right', va='top')
+    ax.set_xticks(
+        xticks, labels=xticklabels,
+        rotation=45, ha='right', va='top'
+    )
     # ax.set_xticklabels(xticks, rotation=45)
     ax.set_xlabel("Local Time (UTC$-$05:00)")
+
 
 def fmt(x, pos=None):
     if 1e-1 < abs(x) < 1e3 or x == 0:
@@ -426,11 +521,18 @@ def fmt(x, pos=None):
         raise RuntimeError('Should not reach')
     return fr'${pexp}$'
 
+
 def fmt2(x, pos=None):
     x = int(x + 18)
     return r'${}^\circ$'.format(x)
 
-fig.colorbar(im, cax=cax, shrink=0.5, format=fmt, extend='both') # type: ignore
+
+fig.colorbar(
+    im, cax=cax,  # type: ignore
+    shrink=0.5,
+    format=fmt,
+    extend='both'
+)  # type: ignore
 cax.set_ylabel(r'$\Delta / \sigma$')
 fig.text(0.03, 0.5, 'Elevation', va='center', rotation='vertical')
 
@@ -445,6 +547,7 @@ fig.text(0.03, 0.5, 'Elevation', va='center', rotation='vertical')
 #         sp.set_visible(False)
 #     ax.spines['right'].set_visible(True)
 #     ax.spines['bottom'].set_visible(False)
-fig.savefig(f'{KEOGRAMS_DIR}/keo_diff_lowell.pdf', dpi=300, bbox_inches='tight')
+fig.savefig(f'{KEOGRAMS_DIR}/keo_diff_lowell.png',
+            dpi=300, bbox_inches='tight')
 plt.show()
 # %%

@@ -1,14 +1,10 @@
 # %% Imports
 from __future__ import annotations
-from itertools import repeat
 from common_funcs import fill_array, get_date, make_color_axis, get_smoothed_geomag
 from settings import Directories, is_interactive_session
 from collections.abc import Iterable
 import datetime as dt
-import lzma
-import multiprocessing
 from pathlib import Path
-import pickle
 from typing import Sequence, SupportsFloat as Numeric
 from tzlocal import get_localzone
 import xarray as xr
@@ -16,7 +12,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import pytz
-from glowpython import no_precipitation
 import matplotlib
 import pandas as pd
 from dateutil.parser import parse
@@ -31,51 +26,6 @@ def fmt_time(x: Numeric, ofst: dt.datetime) -> str:
     x = dt.timedelta(hours=x)  # type: ignore
     res = ofst + x  # type: ignore
     return res.strftime('%H:%M')
-# %% For each day
-
-
-def generate_vert(model_dir: Path, date: str, file: Path):
-    print(f'Processing {date}...')
-    lat, lon = 42.64981361744372, -71.31681056737486
-    if os.path.exists(model_dir / f'vert_{date}.nc'):
-        ionos = xr.load_dataset(model_dir / f'vert_{date}.nc')
-        return
-    ionos = []  # type: ignore
-    with lzma.open(file, 'rb') as f:
-        fitres = pickle.load(f)
-    # Get the model data
-    tstamps = [x[0] for x in fitres]
-    _, ap, f107, f107a, f107p = get_smoothed_geomag(tstamps)  # type: ignore
-    # pbar = tqdm(range(len(tstamps)))
-    pbar = range(len(tstamps))
-    ionos = []  # type: ignore
-    for idx in pbar:
-        geomag_params = (f107a[idx], f107[idx], f107p[idx], ap[idx])
-        res = fitres[idx][1]
-        if res is None:
-            print('None')
-        else:
-            time = pd.to_datetime(
-                tstamps[idx]).to_pydatetime().astimezone(pytz.utc)
-            density_pert = (res.x[0], res.x[1], res.x[2],
-                            res.x[3], res.x[4], 1, res.x[5])
-            iono = no_precipitation(
-                time, lat, lon, 100, density_pert, geomag_params=geomag_params)
-            # geomag_params = iono.attrs['geomag_params']
-            # if 'geomag_params' in iono.attrs:
-            #     del iono.attrs['geomag_params']
-            if 'precip' in iono.attrs:
-                del iono.attrs['precip']
-            # else:
-            #     print('No precip')
-            # for key, val in geomag_params.items():
-            #     iono.attrs[key] = val
-            iono.attrs['density_perturbation'] = density_pert
-            ionos.append(iono)
-    ionos: xr.Dataset = xr.concat(ionos, pd.Index( # type: ignore
-        tstamps, name='tstamp'))  # type: ignore
-    ionos.to_netcdf(model_dir / f'vert_{date}.nc')
-    return ionos
 # %%
 
 
@@ -88,9 +38,9 @@ def plot_density(iono: xr.Dataset, keys: Sequence[str], exkeys: Sequence[str], o
     vals = {}
     for key in keys[:-1]:
         arr = iono[key].values
-        _, arr, _ = fill_array(arr, tstamps, axis=0) # type: ignore
+        _, arr, _ = fill_array(arr, tstamps, axis=0)  # type: ignore
         vals[key] = arr
-    tstamps, vals[keys[-1]], nanfill = fill_array( # type: ignore
+    tstamps, vals[keys[-1]], nanfill = fill_array(  # type: ignore
         iono[keys[-1]].values, tstamps, axis=0
     )
     fig, axs = plt.subplots(len(keys), 1, figsize=(
@@ -196,20 +146,22 @@ def plot_density2(iono: xr.Dataset, keys: Sequence[str], exkeys: Sequence[str], 
         try:
             _ = int(key)
             arr = iono['ver'].sel(
-                # type: ignore
-                {'wavelength': key, 'alt_km': slice(alt_min[idx], alt_max[idx])}).values # type: ignore
+                {'wavelength': key, 'alt_km': slice(
+                    alt_min[idx], alt_max[idx])}  # type: ignore
+            ).values
             key_ver[key] = True
         except ValueError:
             arr = iono[key].sel(
-                # type: ignore
-                {'alt_km': slice(alt_min[idx], alt_max[idx])}).values # type: ignore
+                {'alt_km': slice(alt_min[idx], alt_max[idx])}  # type: ignore
+            ).values
             key_ver[key] = False
         # _, arr = fill_array(arr, tstamps, axis=0)
         vals[key] = arr
     for key in keys[:-1]:
-        _, arr, _ = fill_array(vals[key].copy(), tstamps, axis=0) # type: ignore
+        _, arr, _ = fill_array(
+            vals[key].copy(), tstamps, axis=0)  # type: ignore
         vals[key] = arr
-    tstamps, vals[keys[-1]], nanfill = fill_array( # type: ignore
+    tstamps, vals[keys[-1]], nanfill = fill_array(  # type: ignore
         vals[keys[-1]].copy(),
         tstamps,
         axis=0
@@ -259,13 +211,14 @@ def plot_density2(iono: xr.Dataset, keys: Sequence[str], exkeys: Sequence[str], 
         val = vals[key].T.copy()
         val[np.where(np.isnan(val))] = 1e-4
         alt_km = iono.alt_km.sel(
-            # type: ignore
-            {'alt_km': slice(alt_min[idx], alt_max[idx])}).values # type: ignore
+            {'alt_km': slice(alt_min[idx], alt_max[idx])}  # type: ignore
+        ).values
         tx, hy = np.meshgrid(ttstamps, alt_km)
         if log:
-            im = ax.pcolormesh(tx, hy, np.log10(
-                # type: ignore
-                val), cmap=cmap, vmin=vmin[idx], vmax=vmax[idx]) # type: ignore
+            im = ax.pcolormesh(
+                tx, hy, np.log10(val), cmap=cmap,
+                vmin=(vmin[idx]), vmax=vmax[idx],  # type: ignore
+            )
             cbar = fig.colorbar(im, cax=cax[idx], shrink=0.5)  # type: ignore
             ticks = (np.asarray(cbar.ax.get_yticks()))
             ticks = np.round(ticks, decimals=0)
@@ -277,8 +230,10 @@ def plot_density2(iono: xr.Dataset, keys: Sequence[str], exkeys: Sequence[str], 
             cbar.ax.locator_params('y')
             cbar.ax.tick_params(labelsize=8)
         else:
-            im = ax.pcolormesh(tx, hy, val, cmap=cmap,
-                               vmin=vmin[idx], vmax=vmax[idx])  # type: ignore
+            im = ax.pcolormesh(
+                tx, hy, val, cmap=cmap,
+                vmin=vmin[idx], vmax=vmax[idx],  # type: ignore
+            )
             cbar = fig.colorbar(im, cax=cax[idx], shrink=0.5)  # type: ignore
             cbar.ax.locator_params('y')
             cbar.ax.tick_params(labelsize=8)
@@ -297,11 +252,15 @@ def plot_density2(iono: xr.Dataset, keys: Sequence[str], exkeys: Sequence[str], 
         except ValueError:
             arr = iono[key]
         if not key_ver[key]:
-            cbar.ax.set_ylabel(r'%s ($%s$)' % (
-                arr.attrs['long_name'].title(), arr.attrs['units']), fontsize=8)
+            cbar.ax.set_ylabel(
+                fr'{arr.attrs["long_name"].title()} (${arr.attrs["units"]}$)',
+                fontsize=8,
+            )
         else:
-            cbar.ax.set_ylabel(r'%s ($%s$)' %
-                               ('VER', arr.attrs['units']), fontsize=8)
+            cbar.ax.set_ylabel(
+                fr'VER (${arr.attrs["units"]}$)',
+                fontsize=8,
+            )
     xticks = np.asarray(axs[-1, 0].get_xticks())
     xticks = np.round(xticks, decimals=1)
     xticks = list(map(lambda x: fmt_time(x, start), xticks))
@@ -328,10 +287,10 @@ def runner(settings: Directories):
     dates = list(map(get_date, files))
     lat, lon = 42.64981361744372, -71.31681056737486
 
-    with multiprocessing.Pool(4) as pool:
-        res = pool.starmap(generate_vert, zip(
-            repeat(settings.model_dir), dates, files))
     for date, _ in zip(dates, files):
+        if not (settings.model_dir / f'vert_{date}.nc').exists():
+            raise FileNotFoundError(
+                f'File {settings.model_dir / f"vert_{date}.nc"} not found. Please run generate_vert first.')
         iono = xr.load_dataset(settings.model_dir / f'vert_{date}.nc')
         # keys = ['O', 'O+', 'O2+']
         # exkeys = ['O', 'O^+', 'O_2^+']
@@ -346,15 +305,22 @@ def runner(settings: Directories):
             ['O$_2$', 'N$_2$', 'e$^-$']  # , '5577 Å', '6300 Å']
         altmin = [70, 100, 70, 60, 60, 100]
         altmax = [200, 800, 400, 100, 100, 800]
-        plot_density2(iono, keys, exkeys, settings.vertprops_dir, 'all_den',
-                      # , 1e-4, 1e-4]
-                      vmin=[2, 2, 2, 2, 2, 2], log=False, cmap='gist_ncar_r',
-                      alt_min=altmin, alt_max=altmax)
+        plot_density2(
+            iono, keys, exkeys, settings.vertprops_dir, 'all_den',
+            # , 1e-4, 1e-4]
+            vmin=[2, 2, 2, 2, 2, 2], log=False, cmap='gist_ncar_r',
+            alt_min=altmin, alt_max=altmax
+        )
         keys = ['Tn', 'Ti', 'Te']
-        exkeys = ['Neutral Temperature',
-                  'Ion Temperature', 'Electron Temperature']
-        plot_density(iono, keys, exkeys, settings.vertprops_dir,
-                     'temps', vmin=100, log=False, cmap='hot')
+        exkeys = [
+            'Neutral Temperature',
+            'Ion Temperature',
+            'Electron Temperature'
+        ]
+        plot_density(
+            iono, keys, exkeys, settings.vertprops_dir,
+            'temps', vmin=100, log=False, cmap='hot'
+        )
 
 
 # %%
@@ -362,11 +328,15 @@ if not INTERACTIVE:
     import argparse
     parser = argparse.ArgumentParser(
         description='Generate vertical profiles from fitres files.')
-    parser.add_argument('suffix', type=str, default=None, nargs='?',
+    parser.add_argument('suffix', type=str, default=None, nargs='*',
                         help='Suffix for the output files.')
     args = parser.parse_args()
-    if args.suffix is None or args.suffix.strip() == '':
-        args.suffix = None
-    dirs = Directories(suffix=args.suffix)
-    runner(dirs)
+    suffixes = list(map(lambda x: x.strip(), args.suffix))
+    suffixes = list(filter(lambda x: len(x) > 0, suffixes))
+    if len(suffixes) == 0:
+        suffixes = [None]
+    for suffix in suffixes:
+        print(f'Processing suffix: {suffix}')
+        dirs = Directories(suffix=suffix)
+        runner(dirs)
 # %%
